@@ -210,7 +210,8 @@ def deriva_gruppo_auto(
     """Deriva il gruppo 45h dalla classificazione automatica.
 
     Statali: un gruppo per Istituto Comprensivo. Comunali e paritarie:
-    l'ambito territoriale numerico del MESIS se presente, altrimenti il
+    l'ambito territoriale numerico del MESIS se presente (la numerazione
+    degli ambiti è cittadina, 1..37, quindi già univoca), altrimenti il
     municipio; i due circuiti restano comunque separati (COM:/PAR:).
     """
     if tipo == TIPO_STATALE:
@@ -218,20 +219,93 @@ def deriva_gruppo_auto(
             return f"IC:{codice_istituto}"
         return f"PLESSO:{codice_plesso}"
     n_amb = estrai_numero_ambito(ambito_orig)
-    # il suffisso municipio evita collisioni tra ambiti omonimi se il file
-    # contiene più municipi
-    suffisso_mun = f" (Mun. {municipio})" if municipio else ""
     if tipo == TIPO_COMUNALE:
         if n_amb:
-            return f"COM:Ambito {n_amb}{suffisso_mun}"
+            return f"COM:Ambito {n_amb}"
         return f"COM:Municipio {municipio or 'N/D'}"
     if tipo == TIPO_PARITARIA:
         if n_amb:
-            return f"PAR:Ambito {n_amb}{suffisso_mun}"
+            return f"PAR:Ambito {n_amb}"
         return f"PAR:Municipio {municipio or 'N/D'}"
     if ambito_orig:
         return f"AMB:{ambito_orig}"
     return f"PLESSO:{codice_plesso}"
+
+
+def _primo_non_vuoto(valori) -> str:
+    for v in valori:
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def risolvi_plessi(
+    df: pd.DataFrame,
+    col_plesso: str,
+    col_ambito: str | None = None,
+    col_istituto_nome: str | None = None,
+    col_plesso_nome: str | None = None,
+    col_municipio: str | None = None,
+    col_istituto_cod: str | None = None,
+    codici_comunali: set[str] | None = None,
+    tipi_override: dict[str, str] | None = None,
+) -> dict[str, dict[str, str]]:
+    """Risolve classificazione, municipio e ambito UNA volta per plesso.
+
+    Tutte le righe di uno stesso plesso ricevono così la stessa
+    classificazione e lo stesso gruppo 45h anche quando i valori MESIS
+    (Ambito, Municipio, denominazioni) variano o mancano su alcune righe.
+    La classificazione considera tutti i valori Ambito del plesso, così un
+    solo '– Paritario' basta a qualificarlo.
+    """
+    override_norm = {
+        str(k).strip().upper(): v for k, v in (tipi_override or {}).items()
+    }
+
+    def _serie(col):
+        if col and col in df.columns:
+            return df[col]
+        return pd.Series("", index=df.index)
+
+    ambiti = _serie(col_ambito)
+    municipi_norm = _serie(col_municipio).apply(normalizza_municipio)
+    nomi_ist = _serie(col_istituto_nome)
+    nomi_plesso = _serie(col_plesso_nome)
+    codici_ist = _serie(col_istituto_cod)
+
+    risoluzione: dict[str, dict[str, str]] = {}
+    for cod, indici in df.groupby(df[col_plesso], sort=True).groups.items():
+        cod = str(cod).strip()
+        if not cod:
+            continue
+        amb_valori = [
+            a.strip() for a in ambiti.loc[indici]
+            if isinstance(a, str) and a.strip()
+        ]
+        ambito = amb_valori[0] if amb_valori else ""
+        ambito_testo = " ".join(sorted(set(amb_valori)))
+        municipio = _primo_non_vuoto(municipi_norm.loc[indici])
+        nome_ist = _primo_non_vuoto(nomi_ist.loc[indici])
+        nome_ple = _primo_non_vuoto(nomi_plesso.loc[indici])
+        cod_ist = _primo_non_vuoto(codici_ist.loc[indici])
+        if cod.upper() in override_norm:
+            tipo, fonte = override_norm[cod.upper()], "manuale"
+        else:
+            tipo, fonte = classifica_gestione(
+                cod, ambito=ambito_testo, istituto=nome_ist,
+                plesso=nome_ple, codici_comunali=codici_comunali,
+            )
+        risoluzione[cod] = {
+            "tipo": tipo,
+            "fonte": fonte,
+            "municipio": municipio,
+            "ambito": ambito,
+            "codice_istituto": cod_ist,
+            "gruppo": deriva_gruppo_auto(tipo, municipio, cod_ist, cod, ambito),
+            "istituto": nome_ist,
+            "plesso": nome_ple,
+        }
+    return risoluzione
 
 
 def carica_codici_comunali(file_bytes: bytes, filename: str = "") -> set[str]:
@@ -242,12 +316,12 @@ def carica_codici_comunali(file_bytes: bytes, filename: str = "") -> set[str]:
     """
     try:
         if filename.lower().endswith(".csv"):
-            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, sep=None, engine="python")
         else:
             try:
                 df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
             except Exception:
-                df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+                df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, sep=None, engine="python")
         target = None
         for c in df.columns:
             cl = str(c).strip().lower()
@@ -499,25 +573,30 @@ def esegui_assegnazione(
         df_work[plesso_nome_col_src].fillna("") if plesso_nome_col_src else ""
     )
 
-    override_norm = {
-        str(k).strip().upper(): v for k, v in (tipi_override or {}).items()
-    }
+    # classificazione, municipio e ambito risolti una volta per plesso:
+    # tutte le righe dello stesso plesso finiscono nello stesso gruppo
+    # anche se i valori MESIS variano o mancano su singole righe
+    risoluzione = risolvi_plessi(
+        df_work,
+        col_plesso="_plesso",
+        col_ambito="_ambito",
+        col_istituto_nome="_nome_ist",
+        col_plesso_nome="_nome_plesso",
+        col_municipio="_municipio",
+        col_istituto_cod="_istituto",
+        codici_comunali=codici_comunali,
+        tipi_override=tipi_override,
+    )
 
-    def _classifica(row) -> tuple[str, str]:
-        cod_up = row["_plesso"].upper()
-        if cod_up in override_norm:
-            return override_norm[cod_up], "manuale"
-        return classifica_gestione(
-            row["_plesso"],
-            ambito=row["_ambito"],
-            istituto=row["_nome_ist"],
-            plesso=row["_nome_plesso"],
-            codici_comunali=codici_comunali,
-        )
+    def _campo(row, campo, default=""):
+        info = risoluzione.get(row["_plesso"])
+        return info[campo] if info else default
 
-    classificazioni = df_work.apply(_classifica, axis=1)
-    df_work["_tipo_gest"] = [t for t, _ in classificazioni]
-    df_work["_fonte_class"] = [f for _, f in classificazioni]
+    df_work["_tipo_gest"] = df_work.apply(lambda r: _campo(r, "tipo", "N/D"), axis=1)
+    df_work["_fonte_class"] = df_work.apply(lambda r: _campo(r, "fonte"), axis=1)
+    df_work["_municipio"] = df_work.apply(
+        lambda r: _campo(r, "municipio", r["_municipio"]), axis=1,
+    )
 
     def calcola_gruppo_45h(row) -> str:
         ambito = row["_ambito"]
@@ -529,11 +608,7 @@ def esegui_assegnazione(
 
     if auto_ambito:
         df_work["_gruppo"] = df_work.apply(
-            lambda r: deriva_gruppo_auto(
-                r["_tipo_gest"], r["_municipio"],
-                r["_istituto"], r["_plesso"], r["_ambito"],
-            ),
-            axis=1,
+            lambda r: _campo(r, "gruppo", f"PLESSO:{r['_plesso']}"), axis=1,
         )
     else:
         df_work["_gruppo"] = df_work.apply(calcola_gruppo_45h, axis=1)
@@ -879,7 +954,7 @@ def costruisci_riepilogo_gruppo(df_result, soglia_ore=45):
 
     def _nomi_scuole(df_g, colonna):
         nomi = sorted(
-            n for n in df_g[colonna].astype(str).str.strip().unique() if n
+            n for n in df_g[colonna].fillna("").astype(str).str.strip().unique() if n
         ) if colonna in df_g.columns else []
         return ", ".join(nomi[:3]) + (f" (+{len(nomi)-3})" if len(nomi) > 3 else "")
 
@@ -988,35 +1063,33 @@ def costruisci_tabella_scuole(
         pd.to_numeric(df_a[ore_col], errors="coerce").fillna(0) if ore_col else 0
     )
 
-    def _first(colname):
-        c = col(colname)
-        if not c:
-            return lambda d: ""
-        return lambda d: str(d[c].iloc[0]) if pd.notna(d[c].iloc[0]) else ""
+    # stessa risoluzione per plesso usata dal motore di assegnazione:
+    # la tabella mostra esattamente i gruppi che verranno applicati
+    risoluzione = risolvi_plessi(
+        df_a,
+        col_plesso="_plesso",
+        col_ambito=col("ambito"),
+        col_istituto_nome=col("istituto"),
+        col_plesso_nome=col("plesso"),
+        col_municipio=col("municipio"),
+        col_istituto_cod=col("codice_mecc_istituto"),
+        codici_comunali=codici_comunali,
+    )
 
     rows = []
     for cod, df_p in df_a.groupby("_plesso", sort=True):
-        if not cod:
+        info = risoluzione.get(str(cod).strip())
+        if info is None:
             continue
-        nome_plesso = _first("plesso")(df_p)
-        nome_ist = _first("istituto")(df_p)
-        cod_ist = _first("codice_mecc_istituto")(df_p).strip()
-        ambito = _first("ambito")(df_p).strip()
-        municipio = normalizza_municipio(_first("municipio")(df_p))
-        tipo, fonte = classifica_gestione(
-            cod, ambito=ambito, istituto=nome_ist, plesso=nome_plesso,
-            codici_comunali=codici_comunali,
-        )
-        gruppo = deriva_gruppo_auto(tipo, municipio, cod_ist, cod, ambito)
         rows.append({
-            "Codice Meccanografico Plesso": cod,
-            "Plesso": nome_plesso,
-            "Istituto": nome_ist,
-            "Municipio": municipio,
-            "Ambito MESIS": ambito,
-            "Tipo Gestione": tipo,
-            "Fonte": fonte,
-            "Gruppo 45h (auto)": gruppo,
+            "Codice Meccanografico Plesso": str(cod).strip(),
+            "Plesso": info["plesso"],
+            "Istituto": info["istituto"],
+            "Municipio": info["municipio"],
+            "Ambito MESIS": info["ambito"],
+            "Tipo Gestione": info["tipo"],
+            "Fonte": info["fonte"],
+            "Gruppo 45h (auto)": info["gruppo"],
             "N. alunni": len(df_p),
             "Ore": df_p["_ore"].sum(),
         })
@@ -1673,6 +1746,24 @@ def verifiche_consistenza(
                  "con la colonna Ambito — verificare",
         ))
 
+        # la numerazione degli ambiti territoriali è cittadina (1..37):
+        # lo stesso ambito in più municipi indica dati da verificare
+        df_amb = df_result.loc[
+            df_result["Gruppo 45h"].str.contains("Ambito", na=False)
+        ]
+        multi_mun = []
+        for grp, df_g in df_amb.groupby("Gruppo 45h"):
+            municipi = {m for m in df_g["Municipio"] if m}
+            if len(municipi) > 1:
+                multi_mun.append(f"{grp} ({', '.join(sorted(municipi))})")
+        checks.append((
+            "Ambiti territoriali univoci tra municipi",
+            not multi_mun,
+            "OK" if not multi_mun
+            else "ATTENZIONE: gruppi con scuole di municipi diversi: "
+                 + "; ".join(multi_mun) + " — verificare la colonna Ambito",
+        ))
+
     ore_output = df_result["Ore Assegnate"].sum() if len(df_result) > 0 else 0
     ore_col = col_map.get("ore_assegnate")
     stato_col = col_map.get("stato")
@@ -2117,6 +2208,9 @@ def main():
                     "La colonna *Gruppo 45h (auto)* mostra il gruppo prima "
                     "delle correzioni."
                 )
+                opzioni_tipo = TIPI_GESTIONE + (
+                    ["N/D"] if (df_scuole["Tipo Gestione"] == "N/D").any() else []
+                )
                 edited_scuole = st.data_editor(
                     df_scuole,
                     use_container_width=True,
@@ -2125,7 +2219,7 @@ def main():
                     column_config={
                         "Tipo Gestione": st.column_config.SelectboxColumn(
                             "Tipo Gestione",
-                            options=TIPI_GESTIONE,
+                            options=opzioni_tipo,
                             required=True,
                         ),
                     },
@@ -2230,6 +2324,14 @@ def main():
 
     st.markdown("---")
     st.markdown("#### 4 · Risultati e download")
+    st.caption(
+        "Risultati calcolati con: modalità **{}** · classificazione "
+        "automatica **{}**. Se cambi le impostazioni nella barra laterale, "
+        "riesegui l'assegnazione per aggiornarli.".format(
+            "in corso d'anno" if res.get("corso_anno") else "inizio anno",
+            "attiva" if res.get("auto_ambito") else "disattivata",
+        )
+    )
 
     n_crit_tot = stats["criticita"]
     if n_crit_tot == 0:
