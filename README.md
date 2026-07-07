@@ -19,13 +19,14 @@ streamlit run app.py
 
 ## Utilizzo
 
-1. Caricare il file Excel MESIS (.xlsx) estratto dal sistema regionale
-2. Scegliere la modalità: **Inizio anno scolastico** oppure **In corso d'anno (finestra di attivazione)**
-3. (Opzionale) Verificare/correggere la classificazione automatica delle scuole nella tabella "Classificazione scuole"
-4. (Opzionale) Caricare un file anagrafe plessi per arricchire gli indirizzi
-5. Regolare i parametri nella sidebar (soglia ore, iterazioni max)
-6. Cliccare "Esegui assegnazione"
-7. Scaricare il risultato in formato .xlsx
+L'interfaccia guida l'operatore in quattro passi, indicati in testa alla pagina:
+
+1. **Carica il file MESIS** (.xlsx estratto dal sistema): l'app riconosce municipio, anno scolastico e data di estrazione
+2. **Controlla i dati**: numeri dell'estrazione e tabella "Classificazione scuole" con tipo gestione, ambito e gruppo 45h di ogni plesso (correggibili direttamente in tabella)
+3. **Esegui l'assegnazione**: scegliendo in sidebar la modalità **Inizio anno scolastico** oppure **In corso d'anno (finestra di attivazione)**
+4. **Scarica i risultati**: report completo, file separati per organismo e lettere PDF
+
+Nella sidebar: parametri economici, file opzionali (anagrafe plessi, elenco scuole comunali) e impostazioni avanzate, tutti raggruppati in sezioni richiudibili con valori predefiniti già corretti.
 
 ## Classificazione automatica degli ambiti (Roma)
 

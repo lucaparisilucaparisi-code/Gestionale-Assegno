@@ -1705,34 +1705,185 @@ def verifiche_consistenza(
 # Streamlit UI
 # ---------------------------------------------------------------------------
 
+STILE_APP = """
+<style>
+#MainMenu, footer {visibility: hidden;}
+div[data-testid="stDecoration"] {display: none;}
+
+.oepac-header {
+    background: linear-gradient(135deg, #6E1626 0%, #9E2B3D 100%);
+    border-radius: 12px;
+    padding: 20px 26px;
+    margin-bottom: 4px;
+    color: #FFFFFF;
+}
+.oepac-header .titolo {
+    font-size: 1.55rem; font-weight: 700; letter-spacing: .2px;
+    line-height: 1.25;
+}
+.oepac-header .sottotitolo {
+    font-size: .9rem; opacity: .92; margin-top: 3px;
+}
+
+.oepac-steps { display: flex; gap: 8px; margin: 14px 0 6px 0; flex-wrap: wrap; }
+.oepac-step {
+    flex: 1 1 170px; display: flex; align-items: center; gap: 9px;
+    padding: 9px 12px; border-radius: 9px; font-size: .85rem;
+    background: #F4F1EE; color: #6B7280; border: 1px solid #E7E2DC;
+}
+.oepac-step .n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 50%;
+    background: #C9C2BA; color: #FFF; font-weight: 700; font-size: .78rem;
+    flex: 0 0 22px;
+}
+.oepac-step.attivo {
+    background: #FBF3F0; color: #6E1626; border-color: #E2C3BC; font-weight: 600;
+}
+.oepac-step.attivo .n { background: #6E1626; }
+.oepac-step.fatto { background: #F1F7F2; color: #2F6846; border-color: #CDE3D4; }
+.oepac-step.fatto .n { background: #3D8B5F; }
+
+div[data-testid="stMetric"] {
+    background: #FFFFFF; border: 1px solid #E7E2DC; border-radius: 10px;
+    padding: 12px 16px; box-shadow: 0 1px 3px rgba(60, 40, 30, .05);
+}
+div[data-testid="stMetric"] label { color: #6B7280; }
+</style>
+"""
+
+PASSI_APP = [
+    "Carica il file MESIS",
+    "Controlla dati e scuole",
+    "Esegui l'assegnazione",
+    "Scarica i risultati",
+]
+
+
+def _render_intestazione():
+    st.markdown(STILE_APP, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="oepac-header">
+          <div class="titolo">Assegnazione automatica OEPAC</div>
+          <div class="sottotitolo">Roma Capitale · Linee Guida DGC n. 260/2024
+          (Art. 5, commi 5 e 6) · vincolo 45 ore settimanali per gruppo ·
+          classificazione automatica IC / infanzie comunali / scuole paritarie</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_passi(corrente: int):
+    """Indicatore del percorso guidato (1..4)."""
+    blocchi = []
+    for i, nome in enumerate(PASSI_APP, 1):
+        if i < corrente:
+            cls, segno = "fatto", "&#10003;"
+        elif i == corrente:
+            cls, segno = "attivo", str(i)
+        else:
+            cls, segno = "", str(i)
+        blocchi.append(
+            f'<div class="oepac-step {cls}"><span class="n">{segno}</span>{nome}</div>'
+        )
+    st.markdown(
+        f'<div class="oepac-steps">{"".join(blocchi)}</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_benvenuto():
+    """Pagina iniziale con le istruzioni, mostrata finché non c'è un file."""
+    st.markdown("##### Come funziona")
+    descrizioni = [
+        ("1 · Carica", "Esporta da MESIS l'elenco iscrizioni OEPAC del tuo "
+         "municipio in formato Excel (.xlsx) e caricalo qui sopra."),
+        ("2 · Controlla", "Verifica i numeri dell'estrazione e la "
+         "classificazione automatica delle scuole: Istituti Comprensivi, "
+         "infanzie comunali e paritarie, con i rispettivi gruppi 45h."),
+        ("3 · Esegui", "L'algoritmo assegna le nuove domande rispettando le "
+         "preferenze delle famiglie, la continuità educativa e il vincolo "
+         "delle 45 ore settimanali per gruppo."),
+        ("4 · Scarica", "Report Excel completo, un file riservato per ogni "
+         "organismo e le lettere di assegnazione in PDF, pronti per l'invio."),
+    ]
+    cols = st.columns(4)
+    for col, (titolo, testo) in zip(cols, descrizioni):
+        with col, st.container(border=True):
+            st.markdown(f"**{titolo}**")
+            st.caption(testo)
+
+    c_sx, c_dx = st.columns(2)
+    with c_sx, st.expander("Le quattro finestre di attivazione"):
+        st.markdown(
+            "Indicazioni operative del Dipartimento Scuola "
+            "(nota QM/102670/2025):\n\n"
+            "| Finestra | Domande presentate | Attivazione servizio |\n"
+            "|---|---|---|\n"
+            "| 1ª | entro il 15 luglio | da inizio anno scolastico |\n"
+            "| 2ª | 16 luglio – 15 ottobre | da novembre |\n"
+            "| 3ª | 16 ottobre – 15 gennaio | da febbraio |\n"
+            "| 4ª | 16 gennaio – 15 marzo | da aprile |\n\n"
+            "Per le finestre in corso d'anno seleziona la modalità "
+            "**In corso d'anno** nelle impostazioni a sinistra: gli alunni "
+            "già attivati restano sul loro organismo e vengono assegnate "
+            "solo le nuove domande."
+        )
+    with c_dx, st.expander("Requisiti del file MESIS"):
+        st.markdown(
+            "- Formato **.xlsx** esportato da MESIS (elenco iscrizioni OEPAC)\n"
+            "- Righe 1-7: metadati dell'estrazione (vengono ignorati)\n"
+            "- Riga 8: intestazioni delle colonne\n"
+            "- Dalla riga 9: un alunno per riga\n\n"
+            "Colonne necessarie: Codice, Stato, Tipo, Cognome, Nome, "
+            "Codice Meccanografico Plesso, Ore Assegnate. Le altre colonne "
+            "(Municipio, Ambito, Istituto, preferenze…) migliorano la "
+            "classificazione automatica e i report."
+        )
+
+
+def estrai_metadati_mesis(file_bytes: bytes) -> dict[str, str]:
+    """Legge le righe di metadati in testa al file MESIS (anno scolastico,
+    municipio, data di elaborazione)."""
+    info: dict[str, str] = {}
+    try:
+        df_meta = pd.read_excel(
+            io.BytesIO(file_bytes), sheet_name=0, header=None, nrows=7, dtype=str,
+        )
+        for v in df_meta[0].dropna():
+            s = str(v).strip()
+            low = s.lower()
+            if ":" not in s:
+                continue
+            valore = s.split(":", 1)[1].strip().strip(",")
+            if low.startswith("anno scolastico"):
+                info["anno"] = valore
+            elif low.startswith("municipio"):
+                info["municipio"] = valore
+            elif low.startswith("data elaborazione"):
+                info["data_elaborazione"] = valore
+    except Exception:
+        pass
+    return info
+
+
 def main():
     st.set_page_config(
-        page_title="Assegnazione OEPAC",
+        page_title="Assegnazione OEPAC — Roma Capitale",
+        page_icon="🏛️",
         layout="wide",
         initial_sidebar_state="expanded",
     )
 
-    st.markdown("## Assegnazione automatica OEPAC")
-    st.caption(
-        "Art. 5, comma 5, Linee Guida DGC Roma Capitale n. 260/2024 — "
-        "vincolo 45 ore settimanali per gruppo (IC / Ambito), con "
-        "classificazione automatica IC / infanzie comunali / paritarie"
-    )
+    _render_intestazione()
 
     with st.sidebar:
-        st.header("Impostazioni")
-        soglia = st.slider(
-            "Soglia minima ore settimanali",
-            min_value=0, max_value=100, value=45,
-            help="L'Organismo deve raggiungere questo monte ore nel gruppo (IC o Ambito) per essere considerato viable.",
-        )
-        max_iter = st.number_input(
-            "Iterazioni massime algoritmo",
-            min_value=1, max_value=200, value=50,
-        )
-        st.divider()
+        st.markdown("### Impostazioni")
+
         modalita = st.radio(
-            "Modalità assegnazione",
+            "Momento dell'assegnazione",
             ["Inizio anno scolastico", "In corso d'anno (finestra di attivazione)"],
             help=(
                 "Inizio anno: le nuove iscrizioni vengono assegnate dalle "
@@ -1763,7 +1914,18 @@ def main():
                     "Attivati fino al", value=datetime.date.today(),
                     format="DD/MM/YYYY",
                 )
-        st.divider()
+
+        soglia = st.slider(
+            "Soglia minima ore settimanali",
+            min_value=0, max_value=100, value=45,
+            help=(
+                "Monte ore settimanale che ogni Organismo deve raggiungere "
+                "nel gruppo (IC o Ambito) per l'affidamento — di norma 45 "
+                "(Art. 5, comma 5). Modificare solo su indicazione della "
+                "Direzione Socio-Educativa."
+            ),
+        )
+
         auto_ambito = st.toggle(
             "Classificazione automatica ambiti (Roma)",
             value=True,
@@ -1777,7 +1939,38 @@ def main():
                 "del MESIS."
             ),
         )
-        with st.expander("Elenco scuole comunali (opzionale)"):
+
+        with st.expander("Parametri economici"):
+            n_settimane = st.number_input(
+                "Settimane annuali", min_value=1, max_value=52, value=35,
+                help="Durata della convenzione annuale (di norma 35 settimane).",
+            )
+            perc_decurtazione = st.number_input(
+                "Decurtazione %", min_value=0.0, max_value=50.0, value=11.0, step=0.5,
+                help="Percentuale di decurtazione applicata alle ore annuali lorde.",
+            )
+            costo_orario = st.number_input(
+                "Costo orario (EUR)", min_value=0.0, value=24.07, step=0.01,
+                format="%.2f",
+            )
+            aliquota_iva = st.number_input(
+                "Aliquota IVA %", min_value=0.0, max_value=30.0, value=5.0, step=0.5,
+            )
+
+        with st.expander("File opzionali"):
+            st.markdown("**Anagrafe plessi**")
+            st.caption(
+                "Arricchisce l'indirizzo dei plessi nei report. File "
+                ".xlsx/.csv con colonne codice meccanografico e indirizzo "
+                "(scaricabile da dati.istruzione.it)."
+            )
+            anagrafe_file = st.file_uploader(
+                "File anagrafe",
+                type=["xlsx", "csv"],
+                key="anagrafe",
+                label_visibility="collapsed",
+            )
+            st.markdown("**Elenco scuole comunali**")
             st.caption(
                 "Per una classificazione certa delle infanzie comunali: "
                 "file .xlsx/.csv con una colonna di codici meccanografici "
@@ -1789,36 +1982,37 @@ def main():
                 key="comunali",
                 label_visibility="collapsed",
             )
-        st.divider()
-        st.subheader("Parametri economici")
-        n_settimane = st.number_input("Settimane annuali", min_value=1, max_value=52, value=35)
-        perc_decurtazione = st.number_input("Decurtazione %", min_value=0.0, max_value=50.0, value=11.0, step=0.5)
-        costo_orario = st.number_input("Costo orario (EUR)", min_value=0.0, value=24.07, step=0.01, format="%.2f")
-        aliquota_iva = st.number_input("Aliquota IVA %", min_value=0.0, max_value=30.0, value=5.0, step=0.5)
-        st.divider()
-        with st.expander("Anagrafe plessi (opzionale)"):
-            st.caption(
-                "Per arricchire l'indirizzo del plesso. "
-                "File .xlsx/.csv con colonne codice meccanografico e indirizzo. "
-                "Scaricabile da dati.istruzione.it."
-            )
-            anagrafe_file = st.file_uploader(
-                "File anagrafe",
-                type=["xlsx", "csv"],
-                key="anagrafe",
-                label_visibility="collapsed",
+
+        with st.expander("Impostazioni avanzate"):
+            max_iter = st.number_input(
+                "Iterazioni massime algoritmo",
+                min_value=1, max_value=200, value=50,
+                help="Limite di sicurezza per la convergenza dell'algoritmo.",
             )
 
+    passi_slot = st.empty()
+
+    def _mostra_passi(n: int):
+        with passi_slot.container():
+            _render_passi(n)
+
+    st.markdown("#### 1 · Carica il file MESIS")
     uploaded = st.file_uploader(
-        "Carica il file MESIS (.xlsx)",
+        "Trascina qui l'elenco iscrizioni OEPAC esportato da MESIS (.xlsx) "
+        "oppure usa *Browse files*",
         type=["xlsx"],
         key="mesis",
+        help=(
+            "Esportazione MESIS standard: 7 righe di metadati, intestazioni "
+            "alla riga 8, un alunno per riga dalla riga 9."
+        ),
     )
 
     if uploaded is None:
         st.session_state.pop("risultati", None)
         st.session_state.pop("_last_file_id", None)
-        st.info("Carica un file MESIS (.xlsx) per iniziare.")
+        _mostra_passi(1)
+        _render_benvenuto()
         return
 
     file_id = f"{uploaded.name}_{uploaded.size}"
@@ -1830,9 +2024,15 @@ def main():
     df_raw, col_map, errors = carica_dati(file_bytes)
 
     if errors:
+        st.error(
+            "Il file caricato non rispetta il formato MESIS atteso. "
+            "Controlla di aver esportato l'elenco iscrizioni OEPAC in "
+            "formato .xlsx senza modificarne la struttura."
+        )
         for err in errors:
-            st.error(err)
+            st.warning(err)
         if not col_map or df_raw.empty:
+            _mostra_passi(1)
             return
 
     stato_col = col_map.get("stato")
@@ -1865,7 +2065,18 @@ def main():
         )
         n_attivati = int(mask_att_prev.sum())
 
-    st.markdown("#### Anteprima dati caricati")
+    st.markdown("#### 2 · Controlla i dati")
+    meta_mesis = estrai_metadati_mesis(file_bytes)
+    info_bits = []
+    if meta_mesis.get("municipio"):
+        info_bits.append(f"**{meta_mesis['municipio'].title()}**")
+    if meta_mesis.get("anno"):
+        info_bits.append(f"anno scolastico **{meta_mesis['anno']}**")
+    if meta_mesis.get("data_elaborazione"):
+        info_bits.append(f"estrazione MESIS del {meta_mesis['data_elaborazione']}")
+    if info_bits:
+        st.markdown("File riconosciuto: " + " · ".join(info_bits))
+
     if corso_anno:
         c1, c2, c3, c4, c5 = st.columns(5)
         c3.metric("Nuove iscrizioni", f"{n_nuove}")
@@ -1943,28 +2154,39 @@ def main():
     if organismi_list:
         with st.sidebar:
             st.divider()
+            st.markdown("### Filtri risultati")
             filtro_org = st.selectbox(
-                "Filtra per Organismo",
+                "Mostra solo l'organismo",
                 ["Tutti"] + organismi_list,
-                help="Filtra i risultati per mostrare solo gli alunni di un Organismo specifico.",
+                help=(
+                    "Filtra le tabelle dei risultati sugli alunni di un "
+                    "singolo organismo. I file scaricati contengono "
+                    "sempre tutti i dati."
+                ),
             )
 
-    st.markdown("---")
+    st.markdown("#### 3 · Esegui l'assegnazione")
     col_btn, col_info = st.columns([1, 3])
     with col_btn:
-        run_clicked = st.button("Esegui assegnazione", type="primary", use_container_width=True)
+        run_clicked = st.button(
+            "Esegui assegnazione", type="primary", use_container_width=True,
+            icon=":material/play_arrow:",
+        )
     with col_info:
         if corso_anno:
             st.caption(
-                f"Modalità in corso d'anno: {n_attivati} alunni già attivati "
-                f"restano sul loro organismo; l'algoritmo assegnera le "
-                f"restanti nuove domande applicando il vincolo di {soglia}h "
-                "per gruppo."
+                f"Modalità **in corso d'anno**: {n_attivati} alunni già attivati "
+                f"restano sul loro organismo per continuità; l'algoritmo "
+                f"assegnerà le restanti nuove domande applicando il vincolo "
+                f"di {soglia} ore per gruppo. Le riconferme non vengono mai "
+                "spostate."
             )
         else:
             st.caption(
-                f"L'algoritmo assegnera le {n_nuove} nuove iscrizioni applicando "
-                f"il vincolo di {soglia}h per gruppo (IC/Ambito)."
+                f"Modalità **inizio anno**: l'algoritmo assegnerà le {n_nuove} "
+                f"nuove iscrizioni in base alle preferenze delle famiglie, "
+                f"applicando il vincolo di {soglia} ore per gruppo. Le "
+                "riconferme non vengono mai spostate."
             )
 
     if run_clicked:
@@ -1995,6 +2217,7 @@ def main():
         }
 
     if "risultati" not in st.session_state:
+        _mostra_passi(3)
         return
 
     res = st.session_state["risultati"]
@@ -2003,9 +2226,23 @@ def main():
     df_criticita = res["df_criticita"]
     log_lines = res["log"]
     stats = res["stats"]
+    _mostra_passi(4)
 
     st.markdown("---")
-    st.markdown("### Risultati")
+    st.markdown("#### 4 · Risultati e download")
+
+    n_crit_tot = stats["criticita"]
+    if n_crit_tot == 0:
+        st.success(
+            f"Assegnazione completata senza criticità: "
+            f"{stats['totale_alunni']} alunni elaborati."
+        )
+    else:
+        st.warning(
+            f"Assegnazione completata: {stats['totale_alunni']} alunni "
+            f"elaborati, di cui **{n_crit_tot} da verificare** — l'elenco "
+            "con le azioni suggerite è nella scheda *Criticità*."
+        )
 
     if res.get("corso_anno") and stats.get("gia_attivati", 0) > 0:
         rc0, rc1, rc2, rc3 = st.columns(4)
@@ -2024,10 +2261,17 @@ def main():
         df_assegnazioni, res["df_raw"], res["col_map"], stats,
         auto_ambito=res.get("auto_ambito", False),
     )
-    with st.expander("Verifiche di consistenza", expanded=False):
+    tutte_ok = all(ok for _, ok, _ in checks)
+    label_verifiche = (
+        "Verifiche di consistenza — tutte superate" if tutte_ok
+        else "Verifiche di consistenza — alcune richiedono attenzione"
+    )
+    with st.expander(label_verifiche, expanded=not tutte_ok):
         for label, ok, detail in checks:
-            icon = "pass" if ok else "fail"
-            st.markdown(f":{'green' if ok else 'red'}[{'OK' if ok else 'ATTN'}] **{label}** — {detail}")
+            st.markdown(
+                f":{'green' if ok else 'red'}[{'OK' if ok else 'ATTENZIONE'}] "
+                f"**{label}** — {detail}"
+            )
 
     df_display = df_assegnazioni.copy()
     if filtro_org != "Tutti":
@@ -2049,11 +2293,11 @@ def main():
         df_riep_display = df_riepilogo
 
     tab_ass, tab_riep, tab_crit, tab_graf, tab_log = st.tabs([
-        f"Assegnazioni ({len(df_display)})",
-        f"Riepilogo Gruppo ({len(df_riep_display)})",
-        f"Criticita ({len(df_criticita)})",
-        "Grafici",
-        "Log",
+        f"📋 Assegnazioni ({len(df_display)})",
+        f"📊 Riepilogo gruppi ({len(df_riep_display)})",
+        f"⚠️ Criticità ({len(df_criticita)})",
+        "📈 Grafici",
+        "🧾 Log elaborazione",
     ])
 
     with tab_ass:
@@ -2129,52 +2373,73 @@ def main():
         for entry in log_lines:
             st.text(entry)
 
-    st.markdown("---")
-    st.markdown("### Download")
-    st.caption(
-        "Il file completo contiene tutti i dati. I file separati e le lettere PDF "
-        "contengono solo i dati della singola cooperativa (idoneo all'invio diretto, GDPR)."
-    )
+    st.markdown("##### Documenti da scaricare")
     d1, d2, d3 = st.columns(3)
-    with d1:
+    with d1, st.container(border=True):
+        st.markdown("**Report completo**")
+        st.caption(
+            "Un unico file Excel per l'ufficio: assegnazioni, riepilogo "
+            "gruppi 45h, riepilogo economico, criticità e un foglio per "
+            "ogni organismo."
+        )
         excel_bytes = genera_excel(
             df_assegnazioni, df_riepilogo, df_criticita,
             n_settimane, perc_decurtazione, costo_orario, aliquota_iva,
         )
         st.download_button(
-            "Report completo (.xlsx)",
+            "Scarica report completo (.xlsx)",
             data=excel_bytes,
             file_name="assegnazioni_output.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             type="primary",
             use_container_width=True,
+            icon=":material/download:",
         )
-        st.caption("Tutte le cooperative in un unico file.")
-    with d2:
+    with d2, st.container(border=True):
+        st.markdown("**File per organismo**")
+        st.caption(
+            "Un file Excel per ogni organismo, con i soli alunni di sua "
+            "competenza: pronto per l'invio diretto nel rispetto della "
+            "privacy (GDPR)."
+        )
         zip_xlsx = genera_zip_excel_cooperative(
             df_assegnazioni, df_riepilogo, df_criticita,
             n_settimane, perc_decurtazione, costo_orario, aliquota_iva,
         )
         st.download_button(
-            "File separati per coop (.zip)",
+            "Scarica file separati (.zip)",
             data=zip_xlsx,
             file_name="assegnazioni_per_cooperativa.zip",
             mime="application/zip",
             use_container_width=True,
+            icon=":material/folder_zip:",
         )
-        st.caption("Un .xlsx per ogni cooperativa.")
-    with d3:
+    with d3, st.container(border=True):
+        st.markdown("**Lettere di assegnazione**")
+        st.caption(
+            "Una lettera PDF per ogni organismo con il dettaglio degli "
+            "alunni assegnati e il computo economico, da protocollare "
+            "e trasmettere."
+        )
         zip_pdf = genera_zip_pdf_cooperative(
             df_assegnazioni, n_settimane, perc_decurtazione, costo_orario, aliquota_iva,
         )
         st.download_button(
-            "Lettere di assegnazione (.zip PDF)",
+            "Scarica lettere (.zip PDF)",
             data=zip_pdf,
             file_name="lettere_assegnazione.zip",
             mime="application/zip",
             use_container_width=True,
+            icon=":material/picture_as_pdf:",
         )
-        st.caption("Una lettera PDF per ogni cooperativa.")
+
+    st.markdown("---")
+    st.caption(
+        "Gestionale OEPAC · Linee Guida DGC Roma Capitale n. 260/2024 · "
+        "I dati trattati riguardano alunni con disabilità (art. 9 Reg. UE "
+        "2016/679): conservare e trasmettere i file scaricati nel rispetto "
+        "della normativa sulla protezione dei dati personali."
+    )
 
 
 def _mostra_grafici(df_ass, df_riep, n_settimane, perc_decurtazione, costo_orario, aliquota_iva):
