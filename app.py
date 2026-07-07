@@ -3,7 +3,14 @@ Assegnazione automatica OEPAC — vincolo 45h DGC 260/2024
 
 Strumento per l'assegnazione degli alunni con disabilità (servizio OEPAC)
 agli Organismi accreditati, secondo le Linee Guida approvate con
-DGC Roma Capitale n. 260/2024 (Art. 3, commi 5 e 6).
+DGC Roma Capitale n. 260/2024 (Art. 5, commi 5 e 6).
+
+Classificazione automatica degli ambiti (Roma Capitale): i gruppi 45h sono
+derivati automaticamente per Istituto Comprensivo statale e, separatamente,
+per le scuole dell'infanzia comunali e per le scuole paritarie (per ambito
+territoriale — numerazione cittadina 1..37 — o per municipio). Supporta le
+assegnazioni in corso d'anno secondo le quattro finestre di attivazione
+(nota Dipartimento Scuola QM/102670/2025).
 """
 
 import datetime
@@ -55,12 +62,18 @@ def calcola_eta(data_nascita: datetime.date | None) -> int | None:
     return eta
 
 
-def deriva_grado(codice_mecc_plesso: str, ambito: str = "") -> str:
+def deriva_grado(codice_mecc_plesso: str, contesto: str = "") -> str:
+    """Deriva il grado scolastico dal codice meccanografico del plesso.
+
+    `contesto` è un testo libero (Tipo Gestione derivato oppure la colonna
+    Ambito del MESIS) usato per distinguere le infanzie comunali dalle
+    paritarie, che condividono il prefisso 1A.
+    """
     if not isinstance(codice_mecc_plesso, str) or len(codice_mecc_plesso) < 4:
         return "N/D"
     prefix = codice_mecc_plesso[2:4].upper()
-    ambito_up = ambito.upper().strip() if isinstance(ambito, str) else ""
-    is_paritario = "PARITARIO" in ambito_up or "PARIT" in ambito_up
+    contesto_up = contesto.upper().strip() if isinstance(contesto, str) else ""
+    is_paritario = "PARIT" in contesto_up
 
     if prefix == "AA":
         return "Infanzia statale"
@@ -73,10 +86,190 @@ def deriva_grado(codice_mecc_plesso: str, ambito: str = "") -> str:
             return "Infanzia paritaria"
         return "Infanzia comunale"
     if prefix == "1E":
-        return "Primaria paritaria" if is_paritario else "Primaria"
+        return "Primaria paritaria"
     if prefix == "1M":
-        return "Sec. I grado paritaria" if is_paritario else "Sec. I grado"
+        return "Sec. I grado paritaria"
     return "N/D"
+
+
+# ---------------------------------------------------------------------------
+# Classificazione automatica ambiti (Roma Capitale)
+#
+# Deriva da codice meccanografico, colonna Municipio e denominazioni:
+#   - Statale          -> gruppo 45h per Istituto Comprensivo (IC:<codice>)
+#   - Infanzia comunale-> gruppo 45h per municipio (COM:Municipio <n>)
+#   - Paritaria        -> gruppo 45h per municipio (PAR:Municipio <n>)
+# ---------------------------------------------------------------------------
+
+MUNICIPI_ROMA = [
+    "I", "II", "III", "IV", "V", "VI", "VII", "VIII",
+    "IX", "X", "XI", "XII", "XIII", "XIV", "XV",
+]
+_ROMANO_A_NUMERO = {r: i + 1 for i, r in enumerate(MUNICIPI_ROMA)}
+
+PREFISSI_PLESSO_STATALE = {"AA", "EE", "MM"}
+KEYWORDS_COMUNALE = ("COMUNAL", "CAPITOLIN")
+
+TIPO_STATALE = "Statale"
+TIPO_COMUNALE = "Infanzia comunale"
+TIPO_PARITARIA = "Paritaria"
+TIPI_GESTIONE = [TIPO_STATALE, TIPO_COMUNALE, TIPO_PARITARIA]
+
+
+def normalizza_municipio(val) -> str:
+    """Normalizza il municipio di Roma in numero romano ('I'..'XV').
+
+    Accetta '1', '01', 'VII', 'Municipio 7', 'MUNICIPIO XIII', 7, ecc.
+    Ritorna stringa vuota se non riconosciuto.
+    """
+    if val is None:
+        return ""
+    try:
+        if pd.isna(val):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    s = str(val).strip().upper()
+    if not s:
+        return ""
+    n = None
+    m = re.search(r"\b(\d{1,2})\b", s)
+    if m:
+        n = int(m.group(1))
+    else:
+        m = re.search(r"\b([IVX]{1,4})\b", s)
+        if m and m.group(1) in _ROMANO_A_NUMERO:
+            n = _ROMANO_A_NUMERO[m.group(1)]
+    if n is not None and 1 <= n <= len(MUNICIPI_ROMA):
+        return MUNICIPI_ROMA[n - 1]
+    return ""
+
+
+def estrai_numero_ambito(ambito: str) -> str:
+    """Estrae il numero dell'ambito territoriale dalla colonna Ambito MESIS.
+
+    Esempi: '10' -> '10', '12 - Paritario' -> '12', 'IC' -> ''.
+    """
+    if not isinstance(ambito, str):
+        return ""
+    m = re.search(r"\d+", ambito)
+    return m.group(0) if m else ""
+
+
+def classifica_gestione(
+    codice_plesso: str,
+    ambito: str = "",
+    istituto: str = "",
+    plesso: str = "",
+    codici_comunali: set[str] | None = None,
+) -> tuple[str, str]:
+    """Classifica la scuola come Statale / Infanzia comunale / Paritaria.
+
+    Ritorna (tipo, fonte) dove fonte indica come è stata determinata la
+    classificazione: 'elenco comunali', 'codice', 'testo', 'ambito MESIS',
+    'presunta' o ''.
+    """
+    cod = codice_plesso.strip().upper() if isinstance(codice_plesso, str) else ""
+    if codici_comunali and cod in codici_comunali:
+        return TIPO_COMUNALE, "elenco comunali"
+    if len(cod) < 4:
+        return "N/D", ""
+    prefix = cod[2:4]
+    if prefix in PREFISSI_PLESSO_STATALE:
+        return TIPO_STATALE, "codice"
+    if prefix[0] != "1":
+        return "N/D", ""
+    if prefix in ("1E", "1M"):
+        # primarie e secondarie non statali: a Roma sono paritarie
+        # (Roma Capitale gestisce direttamente solo scuole dell'infanzia)
+        return TIPO_PARITARIA, "codice"
+    # prefisso 1A (o altro non statale): infanzia comunale o paritaria
+    testo = " ".join(
+        v.upper() for v in (ambito, istituto, plesso) if isinstance(v, str)
+    )
+    if "PARIT" in testo:
+        return TIPO_PARITARIA, "testo"
+    if any(k in testo for k in KEYWORDS_COMUNALE):
+        return TIPO_COMUNALE, "testo"
+    # nel MESIS le infanzie comunali stanno negli ambiti territoriali
+    # numerici (es. '10', '11'), le paritarie in quelli '... - Paritario'
+    if estrai_numero_ambito(ambito):
+        return TIPO_COMUNALE, "ambito MESIS"
+    # A Roma le infanzie non statali del circuito OEPAC sono in prevalenza
+    # comunali: in assenza di altri segnali la classificazione va verificata.
+    return TIPO_COMUNALE, "presunta"
+
+
+def deriva_gruppo_auto(
+    tipo: str,
+    municipio: str,
+    codice_istituto: str,
+    codice_plesso: str,
+    ambito_orig: str = "",
+) -> str:
+    """Deriva il gruppo 45h dalla classificazione automatica.
+
+    Statali: un gruppo per Istituto Comprensivo. Comunali e paritarie:
+    l'ambito territoriale numerico del MESIS se presente, altrimenti il
+    municipio; i due circuiti restano comunque separati (COM:/PAR:).
+    """
+    if tipo == TIPO_STATALE:
+        if codice_istituto:
+            return f"IC:{codice_istituto}"
+        return f"PLESSO:{codice_plesso}"
+    n_amb = estrai_numero_ambito(ambito_orig)
+    # il suffisso municipio evita collisioni tra ambiti omonimi se il file
+    # contiene più municipi
+    suffisso_mun = f" (Mun. {municipio})" if municipio else ""
+    if tipo == TIPO_COMUNALE:
+        if n_amb:
+            return f"COM:Ambito {n_amb}{suffisso_mun}"
+        return f"COM:Municipio {municipio or 'N/D'}"
+    if tipo == TIPO_PARITARIA:
+        if n_amb:
+            return f"PAR:Ambito {n_amb}{suffisso_mun}"
+        return f"PAR:Municipio {municipio or 'N/D'}"
+    if ambito_orig:
+        return f"AMB:{ambito_orig}"
+    return f"PLESSO:{codice_plesso}"
+
+
+def carica_codici_comunali(file_bytes: bytes, filename: str = "") -> set[str]:
+    """Carica un elenco di codici meccanografici di scuole comunali.
+
+    Accetta .xlsx/.csv con una colonna il cui nome contiene 'codice' o 'mecc'
+    (in mancanza usa la prima colonna).
+    """
+    try:
+        if filename.lower().endswith(".csv"):
+            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+        else:
+            try:
+                df = pd.read_excel(io.BytesIO(file_bytes), dtype=str)
+            except Exception:
+                df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+        target = None
+        for c in df.columns:
+            cl = str(c).strip().lower()
+            if "codice" in cl or "mecc" in cl:
+                target = c
+                break
+        codes: set[str] = set()
+        if target is None:
+            if len(df.columns) != 1:
+                return set()
+            target = df.columns[0]
+            # file a colonna singola senza intestazione: anche il nome
+            # colonna potrebbe essere un codice
+            header = str(target).strip().upper()
+            if re.fullmatch(r"[A-Z]{2}\w{8}", header):
+                codes.add(header)
+        codes.update(
+            str(v).strip().upper() for v in df[target].dropna() if str(v).strip()
+        )
+        return codes
+    except Exception:
+        return set()
 
 
 def parse_preferenze(testo: str) -> list[str]:
@@ -225,6 +418,11 @@ def esegui_assegnazione(
     col_map: dict[str, str],
     soglia_ore: int = 45,
     max_iter: int = 50,
+    auto_ambito: bool = False,
+    tipi_override: dict[str, str] | None = None,
+    codici_comunali: set[str] | None = None,
+    corso_anno: bool = False,
+    data_riferimento: datetime.date | None = None,
 ):
 
     log = []
@@ -232,6 +430,7 @@ def esegui_assegnazione(
         "totale_alunni": 0,
         "riconferme": 0,
         "nuove_iscrizioni": 0,
+        "gia_attivati": 0,
         "criticita": 0,
         "spostamenti": 0,
         "iterazioni": 0,
@@ -259,7 +458,8 @@ def esegui_assegnazione(
         "Codice Iscrizione", "Tipo", "Cognome", "Nome", "Data Nascita",
         "Età", "Codice Meccanografico Istituto", "Istituto",
         "Codice Meccanografico Plesso", "Plesso", "Indirizzo Plesso",
-        "Grado Scolastico", "Classe", "Sezione", "Ambito", "Gruppo 45h",
+        "Grado Scolastico", "Classe", "Sezione", "Ambito",
+        "Tipo Gestione", "Fonte Classificazione", "Municipio", "Gruppo 45h",
         "Ore Richieste", "Ore Assegnate", "Organismo Pre-esistente",
         "Organismo Assegnato dall'Algoritmo", "Preferenza Soddisfatta",
         "Data Attivazione", "Status", "Note",
@@ -267,7 +467,7 @@ def esegui_assegnazione(
     if len(df_work) == 0:
         df_empty = pd.DataFrame(columns=empty_result_cols)
         df_riep_empty = pd.DataFrame(columns=[
-            "Gruppo 45h", "Tipo gruppo", "Descrizione", "Ambito",
+            "Gruppo 45h", "Tipo gruppo", "Descrizione", "Ambito", "Municipio",
             "N. plessi", "Organismo", "N. alunni assegnati",
             "Ore totali settimanali org.", "Ore totali del gruppo", "Soglia 45h",
         ])
@@ -277,6 +477,9 @@ def esegui_assegnazione(
 
     ambito_col = col("ambito")
     ist_col = col("codice_mecc_istituto")
+    municipio_src_col = col("municipio")
+    istituto_nome_col = col("istituto")
+    plesso_nome_col_src = col("plesso")
 
     df_work["_ore"] = pd.to_numeric(df_work[ore_col], errors="coerce").fillna(0)
     df_work["_tipo_norm"] = df_work[tipo_col].str.strip().str.upper().fillna("")
@@ -285,6 +488,36 @@ def esegui_assegnazione(
     df_work["_codice"] = df_work[codice_col].str.strip().fillna("")
     df_work["_ambito"] = df_work[ambito_col].str.strip().fillna("") if ambito_col else ""
     df_work["_istituto"] = df_work[ist_col].str.strip().fillna("") if ist_col else ""
+    df_work["_municipio"] = (
+        df_work[municipio_src_col].apply(normalizza_municipio)
+        if municipio_src_col else ""
+    )
+    df_work["_nome_ist"] = (
+        df_work[istituto_nome_col].fillna("") if istituto_nome_col else ""
+    )
+    df_work["_nome_plesso"] = (
+        df_work[plesso_nome_col_src].fillna("") if plesso_nome_col_src else ""
+    )
+
+    override_norm = {
+        str(k).strip().upper(): v for k, v in (tipi_override or {}).items()
+    }
+
+    def _classifica(row) -> tuple[str, str]:
+        cod_up = row["_plesso"].upper()
+        if cod_up in override_norm:
+            return override_norm[cod_up], "manuale"
+        return classifica_gestione(
+            row["_plesso"],
+            ambito=row["_ambito"],
+            istituto=row["_nome_ist"],
+            plesso=row["_nome_plesso"],
+            codici_comunali=codici_comunali,
+        )
+
+    classificazioni = df_work.apply(_classifica, axis=1)
+    df_work["_tipo_gest"] = [t for t, _ in classificazioni]
+    df_work["_fonte_class"] = [f for _, f in classificazioni]
 
     def calcola_gruppo_45h(row) -> str:
         ambito = row["_ambito"]
@@ -294,7 +527,16 @@ def esegui_assegnazione(
             return f"AMB:{ambito}"
         return f"PLESSO:{row['_plesso']}"
 
-    df_work["_gruppo"] = df_work.apply(calcola_gruppo_45h, axis=1)
+    if auto_ambito:
+        df_work["_gruppo"] = df_work.apply(
+            lambda r: deriva_gruppo_auto(
+                r["_tipo_gest"], r["_municipio"],
+                r["_istituto"], r["_plesso"], r["_ambito"],
+            ),
+            axis=1,
+        )
+    else:
+        df_work["_gruppo"] = df_work.apply(calcola_gruppo_45h, axis=1)
 
     nome_registro: dict[str, str] = {}
 
@@ -315,9 +557,47 @@ def esegui_assegnazione(
     is_nuova = df_work["_tipo_norm"] == "NUOVA ISCRIZIONE"
     is_altro = ~is_riconferma & ~is_nuova
 
+    # In corso d'anno (finestre di attivazione) gli alunni già attivati —
+    # Organismo Assegnato e Data Attivazione presenti — mantengono il loro
+    # organismo per continuità: l'algoritmo assegna solo le nuove domande
+    # non ancora attivate.
+    data_att_col_w = col("data_attivazione")
+
+    def _gia_attivato(idx) -> bool:
+        org = df_work.at[idx, "_org_orig"]
+        if not (isinstance(org, str) and org.strip()):
+            return False
+        if not data_att_col_w:
+            return False
+        val = df_work.at[idx, data_att_col_w]
+        d = parse_data_nascita(val)
+        if d is None:
+            # data presente ma non interpretabile: prudenzialmente attivato
+            return isinstance(val, str) and val.strip() != ""
+        if data_riferimento is not None:
+            return d <= data_riferimento
+        return True
+
+    if corso_anno:
+        is_attivato = pd.Series(
+            [bool(is_nuova.at[i]) and _gia_attivato(i) for i in df_work.index],
+            index=df_work.index,
+        )
+    else:
+        is_attivato = pd.Series(False, index=df_work.index)
+    is_fisso = is_riconferma | is_attivato
+    is_nuova_da_assegnare = is_nuova & ~is_attivato
+
     stats["totale_alunni"] = len(df_work)
     stats["riconferme"] = int(is_riconferma.sum())
     stats["nuove_iscrizioni"] = int(is_nuova.sum())
+    stats["gia_attivati"] = int(is_attivato.sum())
+    if corso_anno:
+        log.append(
+            f"Modalità in corso d'anno: {stats['gia_attivati']} alunni già "
+            f"attivati mantenuti sul loro organismo, "
+            f"{int(is_nuova_da_assegnare.sum())} nuove domande da assegnare."
+        )
 
     df_work["_assegnato"] = ""
     df_work["_pref_idx"] = 0
@@ -342,8 +622,13 @@ def esegui_assegnazione(
             df_work.at[idx, "_pref_soddisfatta"] = "Riconferma"
             df_work.at[idx, "_note"] = "Riconferma senza organismo pre-esistente"
 
+    for idx in df_work.index[is_attivato]:
+        df_work.at[idx, "_assegnato"] = df_work.at[idx, "_org_orig"].strip()
+        df_work.at[idx, "_pref_soddisfatta"] = "Già attivato"
+        df_work.at[idx, "_status"] = "OK"
+
     nuove_idx = sorted(
-        df_work.index[is_nuova].tolist(),
+        df_work.index[is_nuova_da_assegnare].tolist(),
         key=lambda i: df_work.at[i, "_codice"],
     )
 
@@ -381,8 +666,10 @@ def esegui_assegnazione(
             org_n = normalizza_nome(org)
             ore_per_coop[g][org_n] = ore_per_coop[g].get(org_n, 0) + df_work.at[idx, "_ore"]
 
+        # organismi con presenze non spostabili (riconferme o già attivati):
+        # esenti dal vincolo di viabilità perché non possono essere svuotati
         riconferme_per_coop: dict[str, set[str]] = {g: set() for g in gruppi}
-        for idx in df_work.index[is_riconferma]:
+        for idx in df_work.index[is_fisso]:
             g = df_work.at[idx, "_gruppo"]
             org = df_work.at[idx, "_assegnato"]
             if org:
@@ -474,7 +761,7 @@ def esegui_assegnazione(
             ore_per_coop_final[g].get(org_n, 0) + df_work.at[idx, "_ore"]
         )
 
-    for idx in df_work.index[is_riconferma]:
+    for idx in df_work.index[is_fisso]:
         g = df_work.at[idx, "_gruppo"]
         org = df_work.at[idx, "_assegnato"]
         if not org:
@@ -483,11 +770,18 @@ def esegui_assegnazione(
         soglia_attiva = ore_totali_gruppo.get(g, 0) >= soglia_ore
         ore_coop = ore_per_coop_final.get(g, {}).get(org_n, 0)
         if soglia_attiva and ore_coop < soglia_ore:
-            df_work.at[idx, "_status"] = "Riconferma sotto soglia"
-            df_work.at[idx, "_note"] = (
-                f"Riconferma sotto soglia {soglia_ore}h — "
-                "verificare con la Direzione Socio-Educativa municipale"
-            )
+            if is_riconferma.at[idx]:
+                df_work.at[idx, "_status"] = "Riconferma sotto soglia"
+                df_work.at[idx, "_note"] = (
+                    f"Riconferma sotto soglia {soglia_ore}h — "
+                    "verificare con la Direzione Socio-Educativa municipale"
+                )
+            else:
+                df_work.at[idx, "_status"] = "Attivato sotto soglia"
+                df_work.at[idx, "_note"] = (
+                    f"Alunno già attivato con organismo sotto soglia {soglia_ore}h — "
+                    "verificare con la Direzione Socio-Educativa municipale"
+                )
 
     stats["criticita"] = int(
         (df_work["_status"] != "OK").sum()
@@ -510,7 +804,8 @@ def esegui_assegnazione(
         eta = calcola_eta(dn)
         plesso_code = df_work.at[idx, "_plesso"]
         ambito_val = df_work.at[idx, "_ambito"]
-        grado = deriva_grado(plesso_code, ambito_val)
+        tipo_gest = df_work.at[idx, "_tipo_gest"]
+        grado = deriva_grado(plesso_code, tipo_gest if tipo_gest != "N/D" else ambito_val)
 
         dn_str = dn.strftime("%d/%m/%Y") if dn else ""
 
@@ -532,6 +827,9 @@ def esegui_assegnazione(
             "Classe": df_work.at[idx, classe_col] if classe_col else "",
             "Sezione": df_work.at[idx, sezione_col] if sezione_col else "",
             "Ambito": df_work.at[idx, "_ambito"],
+            "Tipo Gestione": tipo_gest,
+            "Fonte Classificazione": df_work.at[idx, "_fonte_class"],
+            "Municipio": df_work.at[idx, "_municipio"],
             "Gruppo 45h": df_work.at[idx, "_gruppo"],
             "Ore Richieste": df_work.at[idx, ore_rich_col] if ore_rich_col else "",
             "Ore Assegnate": df_work.at[idx, "_ore"],
@@ -578,26 +876,44 @@ def esegui_assegnazione(
 def costruisci_riepilogo_gruppo(df_result, soglia_ore=45):
     """Costruisce il riepilogo per (Gruppo 45h x Organismo) dal DataFrame assegnazioni."""
     ORG = "Organismo Assegnato dall'Algoritmo"
+
+    def _nomi_scuole(df_g, colonna):
+        nomi = sorted(
+            n for n in df_g[colonna].astype(str).str.strip().unique() if n
+        ) if colonna in df_g.columns else []
+        return ", ".join(nomi[:3]) + (f" (+{len(nomi)-3})" if len(nomi) > 3 else "")
+
     riepilogo_rows = []
     gruppi_result = df_result["Gruppo 45h"].unique()
     for grp in sorted(g for g in gruppi_result if g):
         df_g = df_result.loc[df_result["Gruppo 45h"] == grp]
         ore_tot_g = df_g["Ore Assegnate"].sum()
+        n_plessi = df_g["Codice Meccanografico Plesso"].nunique()
 
         if grp.startswith("IC:"):
             tipo_gruppo = "IC"
             desc_gruppo = df_g["Istituto"].iloc[0] if "Istituto" in df_g.columns else ""
-            n_plessi = df_g["Codice Meccanografico Plesso"].nunique()
+        elif grp.startswith("COM:"):
+            tipo_gruppo = "Infanzia comunale"
+            desc_gruppo = _nomi_scuole(df_g, "Plesso")
+        elif grp.startswith("PAR:"):
+            tipo_gruppo = "Paritario"
+            desc_gruppo = _nomi_scuole(df_g, "Plesso")
         elif grp.startswith("AMB:"):
             amb_val = grp.replace("AMB:", "")
             tipo_gruppo = "Paritario" if "Paritario" in amb_val else "Comunale"
             nomi = sorted(df_g.drop_duplicates("Codice Meccanografico Istituto")["Istituto"].unique())
             desc_gruppo = ", ".join(nomi[:3]) + (f" (+{len(nomi)-3})" if len(nomi) > 3 else "")
-            n_plessi = df_g["Codice Meccanografico Plesso"].nunique()
         else:
             tipo_gruppo = ""
             desc_gruppo = df_g["Plesso"].iloc[0] if "Plesso" in df_g.columns else ""
             n_plessi = 1
+
+        if "Municipio" in df_g.columns:
+            municipi = sorted(m for m in df_g["Municipio"].unique() if m)
+            municipio_str = ", ".join(municipi)
+        else:
+            municipio_str = ""
 
         for org in sorted(o for o in df_g[ORG].unique() if o):
             mask_o = df_g[ORG] == org
@@ -613,6 +929,7 @@ def costruisci_riepilogo_gruppo(df_result, soglia_ore=45):
                 "Tipo gruppo": tipo_gruppo,
                 "Descrizione": desc_gruppo,
                 "Ambito": df_g["Ambito"].iloc[0],
+                "Municipio": municipio_str,
                 "N. plessi": n_plessi,
                 "Organismo": org,
                 "N. alunni assegnati": int(mask_o.sum()),
@@ -630,12 +947,80 @@ def costruisci_criticita(df_result):
         "Preferenze non espresse": "Contattare la famiglia per acquisire le preferenze",
         "Da assegnare manualmente": "Spostamento manuale necessario",
         "Riconferma sotto soglia": "Inoltrare segnalazione formale alla Direzione Socio-Educativa",
+        "Attivato sotto soglia": "Inoltrare segnalazione formale alla Direzione Socio-Educativa",
     }
     if not df_criticita.empty:
         df_criticita["Azione suggerita"] = df_criticita["Status"].map(azioni).fillna("")
     else:
         df_criticita["Azione suggerita"] = []
     return df_criticita
+
+
+def costruisci_tabella_scuole(
+    df_raw: pd.DataFrame,
+    col_map: dict[str, str],
+    codici_comunali: set[str] | None = None,
+) -> pd.DataFrame:
+    """Tabella dei plessi (iscrizioni attive) con la classificazione derivata.
+
+    Serve per la verifica/correzione manuale prima dell'assegnazione:
+    una riga per codice meccanografico plesso.
+    """
+    def col(key):
+        return col_map.get(key)
+
+    stato_col = col("stato")
+    plesso_col = col("codice_mecc_plesso")
+    if not stato_col or not plesso_col:
+        return pd.DataFrame()
+
+    mask = df_raw[stato_col].str.strip().str.upper() == "ATTIVA"
+    rinuncia_col = col("data_rinuncia")
+    if rinuncia_col:
+        mask &= df_raw[rinuncia_col].isna() | (df_raw[rinuncia_col].str.strip() == "")
+    df_a = df_raw.loc[mask].copy()
+    if df_a.empty:
+        return pd.DataFrame()
+
+    ore_col = col("ore_assegnate")
+    df_a["_plesso"] = df_a[plesso_col].str.strip().fillna("")
+    df_a["_ore"] = (
+        pd.to_numeric(df_a[ore_col], errors="coerce").fillna(0) if ore_col else 0
+    )
+
+    def _first(colname):
+        c = col(colname)
+        if not c:
+            return lambda d: ""
+        return lambda d: str(d[c].iloc[0]) if pd.notna(d[c].iloc[0]) else ""
+
+    rows = []
+    for cod, df_p in df_a.groupby("_plesso", sort=True):
+        if not cod:
+            continue
+        nome_plesso = _first("plesso")(df_p)
+        nome_ist = _first("istituto")(df_p)
+        cod_ist = _first("codice_mecc_istituto")(df_p).strip()
+        ambito = _first("ambito")(df_p).strip()
+        municipio = normalizza_municipio(_first("municipio")(df_p))
+        tipo, fonte = classifica_gestione(
+            cod, ambito=ambito, istituto=nome_ist, plesso=nome_plesso,
+            codici_comunali=codici_comunali,
+        )
+        gruppo = deriva_gruppo_auto(tipo, municipio, cod_ist, cod, ambito)
+        rows.append({
+            "Codice Meccanografico Plesso": cod,
+            "Plesso": nome_plesso,
+            "Istituto": nome_ist,
+            "Municipio": municipio,
+            "Ambito MESIS": ambito,
+            "Tipo Gestione": tipo,
+            "Fonte": fonte,
+            "Gruppo 45h (auto)": gruppo,
+            "N. alunni": len(df_p),
+            "Ore": df_p["_ore"].sum(),
+        })
+    return pd.DataFrame(rows)
 
 
 def arricchisci_indirizzi(df_result: pd.DataFrame, file_bytes: bytes, filename: str = "") -> pd.DataFrame:
@@ -737,7 +1122,7 @@ def colonne_coop(perc_decurtazione=11.0, aliquota_iva=5.0):
         "Codice Iscrizione", "Tipo", "Cognome", "Nome", "Data Nascita", "Età",
         "Codice Meccanografico Istituto", "Istituto",
         "Codice Meccanografico Plesso", "Plesso", "Grado Scolastico",
-        "Classe", "Sezione", "Ambito", "Gruppo 45h",
+        "Classe", "Sezione", "Ambito", "Tipo Gestione", "Municipio", "Gruppo 45h",
         "Ore Assegnate", "Ore annuali lorde",
         f"Decurtazione {perc_decurtazione:.0f}%", "Ore annuali nette",
         "Imponibile (EUR)", f"IVA {aliquota_iva:.0f}% (EUR)", "Totale (EUR)",
@@ -777,6 +1162,7 @@ def genera_excel(
     STATUS_FILLS = {
         "OK": PatternFill(start_color="E2EFDA", end_color="E2EFDA", fill_type="solid"),
         "Riconferma sotto soglia": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
+        "Attivato sotto soglia": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
         "Preferenze non espresse": PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),
         "Da assegnare manualmente": PatternFill(start_color="FCE4EC", end_color="FCE4EC", fill_type="solid"),
     }
@@ -1045,7 +1431,7 @@ def genera_pdf_coop(
     elems.append(Paragraph(org, h2))
     elems.append(Paragraph(
         f"Roma, {today_str} &nbsp;&nbsp;|&nbsp;&nbsp; "
-        "Ai sensi dell'Art. 3, commi 5 e 6 delle Linee Guida approvate con "
+        "Ai sensi dell'Art. 5, commi 5 e 6 delle Linee Guida approvate con "
         "DGC Roma Capitale n. 260/2024.", normal,
     ))
     elems.append(Spacer(1, 6))
@@ -1190,7 +1576,9 @@ def genera_zip_pdf_cooperative(
 # Consistency checks
 # ---------------------------------------------------------------------------
 
-def verifiche_consistenza(df_result, df_input_work, col_map, stats) -> list[tuple[str, bool, str]]:
+def verifiche_consistenza(
+    df_result, df_input_work, col_map, stats, auto_ambito=False,
+) -> list[tuple[str, bool, str]]:
     checks = []
 
     checks.append((
@@ -1218,6 +1606,72 @@ def verifiche_consistenza(df_result, df_input_work, col_map, stats) -> list[tupl
         ok_ric,
         "OK" if ok_ric else f"ATTENZIONE: {len(riconferme_spostate)} riconferme con organismo diverso",
     ))
+
+    if "Preferenza Soddisfatta" in df_result.columns:
+        attivati_spostati = df_result.loc[
+            (df_result["Preferenza Soddisfatta"] == "Già attivato")
+            & (df_result["Organismo Assegnato dall'Algoritmo"] != df_result["Organismo Pre-esistente"])
+        ]
+        ok_att = len(attivati_spostati) == 0
+        if (df_result["Preferenza Soddisfatta"] == "Già attivato").any():
+            checks.append((
+                "Alunni già attivati mantenuti sul loro organismo",
+                ok_att,
+                "OK" if ok_att else f"ERRORE: {len(attivati_spostati)} alunni attivati spostati",
+            ))
+
+    if auto_ambito and "Tipo Gestione" in df_result.columns:
+        plessi_nd = df_result.loc[
+            df_result["Tipo Gestione"] == "N/D", "Codice Meccanografico Plesso"
+        ].nunique()
+        checks.append((
+            "Classificazione automatica completa",
+            plessi_nd == 0,
+            "Tutti i plessi classificati (Statale / Infanzia comunale / Paritaria)"
+            if plessi_nd == 0
+            else f"ATTENZIONE: {plessi_nd} plessi non classificati (N/D) — gruppo derivato dal solo plesso",
+        ))
+
+        presunti = df_result.loc[
+            df_result["Fonte Classificazione"] == "presunta",
+            "Codice Meccanografico Plesso",
+        ].nunique()
+        checks.append((
+            "Classificazioni da verificare",
+            presunti == 0,
+            "Nessuna classificazione presunta"
+            if presunti == 0
+            else f"ATTENZIONE: {presunti} plessi con classificazione presunta — "
+                 "verificare nella tabella 'Classificazione scuole'",
+        ))
+
+        mask_mun = df_result["Tipo Gestione"].isin([TIPO_COMUNALE, TIPO_PARITARIA])
+        senza_mun = df_result.loc[
+            mask_mun
+            & (df_result["Municipio"] == "")
+            & (~df_result["Gruppo 45h"].str.contains("Ambito", na=False)),
+            "Codice Meccanografico Plesso",
+        ].nunique()
+        checks.append((
+            "Ambito/municipio riconosciuto per comunali e paritarie",
+            senza_mun == 0,
+            "OK" if senza_mun == 0
+            else f"ATTENZIONE: {senza_mun} plessi senza ambito né municipio riconosciuto",
+        ))
+
+        amb_up = df_result["Ambito"].fillna("").str.upper()
+        conflitti = df_result.loc[
+            (amb_up.str.contains("PARIT") & (df_result["Tipo Gestione"] == TIPO_COMUNALE))
+            | (amb_up.str.contains("COMUNAL") & (df_result["Tipo Gestione"] == TIPO_PARITARIA)),
+            "Codice Meccanografico Plesso",
+        ].nunique()
+        checks.append((
+            "Coerenza con la colonna Ambito del MESIS",
+            conflitti == 0,
+            "Nessun conflitto" if conflitti == 0
+            else f"ATTENZIONE: {conflitti} plessi con classificazione in conflitto "
+                 "con la colonna Ambito — verificare",
+        ))
 
     ore_output = df_result["Ore Assegnate"].sum() if len(df_result) > 0 else 0
     ore_col = col_map.get("ore_assegnate")
@@ -1260,8 +1714,9 @@ def main():
 
     st.markdown("## Assegnazione automatica OEPAC")
     st.caption(
-        "Art. 3, comma 5, Linee Guida DGC Roma Capitale n. 260/2024 — "
-        "vincolo 45 ore settimanali per gruppo (IC / Ambito)"
+        "Art. 5, comma 5, Linee Guida DGC Roma Capitale n. 260/2024 — "
+        "vincolo 45 ore settimanali per gruppo (IC / Ambito), con "
+        "classificazione automatica IC / infanzie comunali / paritarie"
     )
 
     with st.sidebar:
@@ -1275,6 +1730,65 @@ def main():
             "Iterazioni massime algoritmo",
             min_value=1, max_value=200, value=50,
         )
+        st.divider()
+        modalita = st.radio(
+            "Modalità assegnazione",
+            ["Inizio anno scolastico", "In corso d'anno (finestra di attivazione)"],
+            help=(
+                "Inizio anno: le nuove iscrizioni vengono assegnate dalle "
+                "preferenze con il vincolo 45h. In corso d'anno: gli alunni "
+                "già attivati (Organismo Assegnato e Data Attivazione "
+                "presenti nel MESIS) restano sul loro organismo per "
+                "continuità e l'algoritmo assegna solo le nuove domande "
+                "della finestra di attivazione. Le finestre OEPAC (nota "
+                "QM/102670/2025) sono quattro: domande entro il 15/07 -> "
+                "attivazione da inizio anno; 16/07-15/10 -> da novembre; "
+                "16/10-15/01 -> da febbraio; 16/01-15/03 -> da aprile."
+            ),
+        )
+        corso_anno = modalita.startswith("In corso")
+        data_riferimento = None
+        if corso_anno:
+            usa_data_rif = st.checkbox(
+                "Considera attivati solo prima di una data",
+                value=False,
+                help=(
+                    "Se attivo, solo gli alunni con Data Attivazione fino "
+                    "alla data indicata sono considerati già attivati; gli "
+                    "altri vengono riassegnati dall'algoritmo."
+                ),
+            )
+            if usa_data_rif:
+                data_riferimento = st.date_input(
+                    "Attivati fino al", value=datetime.date.today(),
+                    format="DD/MM/YYYY",
+                )
+        st.divider()
+        auto_ambito = st.toggle(
+            "Classificazione automatica ambiti (Roma)",
+            value=True,
+            help=(
+                "Deriva automaticamente i gruppi 45h dal codice "
+                "meccanografico e dai dati MESIS: un gruppo per ogni "
+                "Istituto Comprensivo statale, e gruppi separati per le "
+                "infanzie comunali e per le scuole paritarie (per ambito "
+                "territoriale, o per municipio se l'ambito manca dal file). "
+                "Se disattivo, i gruppi seguono la sola colonna Ambito "
+                "del MESIS."
+            ),
+        )
+        with st.expander("Elenco scuole comunali (opzionale)"):
+            st.caption(
+                "Per una classificazione certa delle infanzie comunali: "
+                "file .xlsx/.csv con una colonna di codici meccanografici "
+                "delle scuole dell'infanzia comunali di Roma Capitale."
+            )
+            comunali_file = st.file_uploader(
+                "File elenco comunali",
+                type=["xlsx", "csv"],
+                key="comunali",
+                label_visibility="collapsed",
+            )
         st.divider()
         st.subheader("Parametri economici")
         n_settimane = st.number_input("Settimane annuali", min_value=1, max_value=52, value=35)
@@ -1339,12 +1853,79 @@ def main():
     if ore_col:
         ore_tot = pd.to_numeric(df_raw.loc[mask_attiva, ore_col], errors="coerce").fillna(0).sum()
 
+    org_prev_col = col_map.get("organismo_assegnato")
+    att_prev_col = col_map.get("data_attivazione")
+    n_attivati = 0
+    if corso_anno and tipo_col and org_prev_col and att_prev_col:
+        sub = df_raw.loc[mask_attiva]
+        mask_att_prev = (
+            (sub[tipo_col].str.strip().str.upper() == "NUOVA ISCRIZIONE")
+            & sub[org_prev_col].fillna("").str.strip().ne("")
+            & sub[att_prev_col].fillna("").str.strip().ne("")
+        )
+        n_attivati = int(mask_att_prev.sum())
+
     st.markdown("#### Anteprima dati caricati")
-    c1, c2, c3, c4 = st.columns(4)
+    if corso_anno:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c3.metric("Nuove iscrizioni", f"{n_nuove}")
+        c4.metric("di cui già attivate", f"{n_attivati}")
+        c5.metric("Ore totali", f"{ore_tot:,.0f}")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
+        c3.metric("Nuove iscrizioni", f"{n_nuove}")
+        c4.metric("Ore totali", f"{ore_tot:,.0f}")
     c1.metric("Iscrizioni attive", f"{n_attive}")
     c2.metric("Riconferme", f"{n_ric}")
-    c3.metric("Nuove iscrizioni", f"{n_nuove}")
-    c4.metric("Ore totali", f"{ore_tot:,.0f}")
+
+    codici_comunali: set[str] = set()
+    if comunali_file is not None:
+        codici_comunali = carica_codici_comunali(
+            comunali_file.getvalue(), comunali_file.name,
+        )
+        if codici_comunali:
+            st.sidebar.success(f"Elenco comunali: {len(codici_comunali)} codici caricati.")
+        else:
+            st.sidebar.warning(
+                "Elenco comunali: nessun codice riconosciuto nel file caricato."
+            )
+
+    tipi_override: dict[str, str] = {}
+    if auto_ambito:
+        df_scuole = costruisci_tabella_scuole(df_raw, col_map, codici_comunali)
+        if not df_scuole.empty:
+            n_presunte = int((df_scuole["Fonte"] == "presunta").sum())
+            label_exp = f"Classificazione scuole ({len(df_scuole)} plessi"
+            label_exp += f", {n_presunte} da verificare)" if n_presunte else ")"
+            with st.expander(label_exp, expanded=n_presunte > 0):
+                st.caption(
+                    "Classificazione derivata automaticamente da codice "
+                    "meccanografico, colonna Ambito e denominazioni. "
+                    "Correggi **Tipo Gestione** dove serve: la correzione "
+                    "viene applicata ai gruppi 45h alla prossima esecuzione. "
+                    "La colonna *Gruppo 45h (auto)* mostra il gruppo prima "
+                    "delle correzioni."
+                )
+                edited_scuole = st.data_editor(
+                    df_scuole,
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"editor_scuole_{file_id}",
+                    column_config={
+                        "Tipo Gestione": st.column_config.SelectboxColumn(
+                            "Tipo Gestione",
+                            options=TIPI_GESTIONE,
+                            required=True,
+                        ),
+                    },
+                    disabled=[c for c in df_scuole.columns if c != "Tipo Gestione"],
+                )
+                for i in range(len(df_scuole)):
+                    cod = df_scuole.iloc[i]["Codice Meccanografico Plesso"]
+                    if edited_scuole.iloc[i]["Tipo Gestione"] != df_scuole.iloc[i]["Tipo Gestione"]:
+                        tipi_override[cod] = edited_scuole.iloc[i]["Tipo Gestione"]
+                if tipi_override:
+                    st.info(f"{len(tipi_override)} classificazioni corrette manualmente.")
 
     organismi_set = set()
     org_col_name = col_map.get("organismo_assegnato")
@@ -1373,14 +1954,29 @@ def main():
     with col_btn:
         run_clicked = st.button("Esegui assegnazione", type="primary", use_container_width=True)
     with col_info:
-        st.caption(
-            f"L'algoritmo assegnera le {n_nuove} nuove iscrizioni applicando "
-            f"il vincolo di {soglia}h per gruppo (IC/Ambito)."
-        )
+        if corso_anno:
+            st.caption(
+                f"Modalità in corso d'anno: {n_attivati} alunni già attivati "
+                f"restano sul loro organismo; l'algoritmo assegnera le "
+                f"restanti nuove domande applicando il vincolo di {soglia}h "
+                "per gruppo."
+            )
+        else:
+            st.caption(
+                f"L'algoritmo assegnera le {n_nuove} nuove iscrizioni applicando "
+                f"il vincolo di {soglia}h per gruppo (IC/Ambito)."
+            )
 
     if run_clicked:
         with st.spinner("Elaborazione in corso..."):
-            result = esegui_assegnazione(df_raw, col_map, soglia, max_iter)
+            result = esegui_assegnazione(
+                df_raw, col_map, soglia, max_iter,
+                auto_ambito=auto_ambito,
+                tipi_override=tipi_override,
+                codici_comunali=codici_comunali,
+                corso_anno=corso_anno,
+                data_riferimento=data_riferimento,
+            )
             df_assegnazioni, df_riepilogo, df_criticita, log_lines, stats, nome_registro = result
             if anagrafe_file:
                 df_assegnazioni = arricchisci_indirizzi(
@@ -1394,6 +1990,8 @@ def main():
             "stats": stats,
             "df_raw": df_raw,
             "col_map": col_map,
+            "auto_ambito": auto_ambito,
+            "corso_anno": corso_anno,
         }
 
     if "risultati" not in st.session_state:
@@ -1409,7 +2007,11 @@ def main():
     st.markdown("---")
     st.markdown("### Risultati")
 
-    rc1, rc2, rc3 = st.columns(3)
+    if res.get("corso_anno") and stats.get("gia_attivati", 0) > 0:
+        rc0, rc1, rc2, rc3 = st.columns(4)
+        rc0.metric("Già attivati (mantenuti)", stats["gia_attivati"])
+    else:
+        rc1, rc2, rc3 = st.columns(3)
     with rc1:
         st.metric("Spostamenti effettuati", stats["spostamenti"])
     with rc2:
@@ -1419,7 +2021,8 @@ def main():
         st.metric("Casi da verificare", n_crit, delta=None if n_crit == 0 else f"{n_crit} criticita", delta_color="off" if n_crit == 0 else "inverse")
 
     checks = verifiche_consistenza(
-        df_assegnazioni, res["df_raw"], res["col_map"], stats
+        df_assegnazioni, res["df_raw"], res["col_map"], stats,
+        auto_ambito=res.get("auto_ambito", False),
     )
     with st.expander("Verifiche di consistenza", expanded=False):
         for label, ok, detail in checks:
@@ -1625,7 +2228,7 @@ def _mostra_grafici(df_ass, df_riep, n_settimane, perc_decurtazione, costo_orari
     with g4:
         st.markdown("**Preferenze soddisfatte (nuove iscrizioni)**")
         pref = df_eco[df_eco["Preferenza Soddisfatta"].isin(
-            ["1ª", "2ª", "3ª", "4ª", "5ª", "Manuale", "Non assegnato"]
+            ["1ª", "2ª", "3ª", "4ª", "5ª", "Manuale", "Non assegnato", "Già attivato"]
         )]["Preferenza Soddisfatta"].value_counts().reset_index()
         pref.columns = ["Preferenza", "Alunni"]
         if not pref.empty:
@@ -1644,6 +2247,15 @@ def _mostra_grafici(df_ass, df_riep, n_settimane, perc_decurtazione, costo_orari
         Ore=("Ore Assegnate", "sum"),
     ).reset_index()
     st.dataframe(grado, use_container_width=True, hide_index=True)
+
+    if "Tipo Gestione" in df_eco.columns:
+        st.markdown("**Distribuzione per tipo gestione e municipio**")
+        tipmun = df_eco.groupby(["Tipo Gestione", "Municipio"]).agg(
+            Alunni=("Codice Iscrizione", "count"),
+            Ore=("Ore Assegnate", "sum"),
+            Gruppi=("Gruppo 45h", "nunique"),
+        ).reset_index()
+        st.dataframe(tipmun, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":
