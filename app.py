@@ -741,11 +741,12 @@ def esegui_assegnazione(
     cronologia_passi: list = []
     cronologia_movimenti: list = []
 
-    def _registra_passo(titolo, descrizione, norma="", sorgente="_assegnato"):
-        stato = {}
-        for i in df_work.index:
-            v = df_work.at[i, sorgente]
-            stato[i] = v.strip() if isinstance(v, str) and v.strip() else ""
+    def _registra_passo(titolo, descrizione, norma="", stato=None):
+        if stato is None:
+            stato = {}
+            for i in df_work.index:
+                v = df_work.at[i, "_assegnato"]
+                stato[i] = v.strip() if isinstance(v, str) and v.strip() else ""
         cronologia_passi.append({
             "indice": len(cronologia_passi),
             "titolo": titolo,
@@ -764,14 +765,24 @@ def esegui_assegnazione(
             "motivo": motivo,
         })
 
+    # Stato iniziale: organismo pre-esistente (continuità) SOLO per riconferme
+    # e già attivati; le nuove iscrizioni non hanno ancora un organismo, così
+    # la loro prima assegnazione non viene contata come uno spostamento.
+    stato_iniziale = {}
+    for i in df_work.index:
+        if is_fisso.at[i]:
+            v = df_work.at[i, "_org_orig"]
+            stato_iniziale[i] = v.strip() if isinstance(v, str) and v.strip() else ""
+        else:
+            stato_iniziale[i] = ""
     _registra_passo(
         "Stato iniziale (istanza MESIS)",
         "Organismo risultante dal MESIS all'avvio del procedimento: per le "
-        "riconferme e gli alunni già attivati è l'organismo pre-esistente; "
-        "per le nuove iscrizioni non ancora attivate non è presente alcun "
-        "organismo.",
+        "riconferme e gli alunni già attivati è l'organismo pre-esistente "
+        "(continuità educativa); le nuove iscrizioni non hanno ancora un "
+        "organismo assegnato.",
         "Dati di input — estrazione MESIS",
-        sorgente="_org_orig",
+        stato=stato_iniziale,
     )
 
     for idx in df_work.index[is_altro]:
@@ -816,7 +827,8 @@ def esegui_assegnazione(
         "Riconferme e alunni già attivati confermati sul proprio organismo "
         "per continuità educativa; nuove iscrizioni assegnate alla 1ª "
         "preferenza espressa dalla famiglia.",
-        "Art. 5, commi 3 e 6, Linee Guida DGC Roma Capitale n. 260/2024",
+        "Art. 5, comma 6 (continuità educativa), Linee Guida DGC Roma "
+        "Capitale n. 260/2024",
     )
 
     gruppi = df_work["_gruppo"].unique()
@@ -1821,26 +1833,32 @@ def costruisci_cronologia_dfs(cronologia: dict):
     ordine = sorted(anagrafica.keys(), key=_chiave)
 
     # --- Sintesi passaggi ---
+    # Uno "spostamento" è una riassegnazione: l'alunno aveva già un organismo
+    # ed è cambiato (o è tornato non assegnato). La prima assegnazione da vuoto
+    # non è uno spostamento. Così la somma coincide con il registro movimenti.
     righe_passi = []
     for k, p in enumerate(passi):
         stato = p["stato"]
         n_ass = sum(1 for v in stato.values() if v)
         if k == 0:
-            n_var = ""
+            n_spost = ""
         else:
             prev = passi[k - 1]["stato"]
-            n_var = sum(1 for i in stato if stato.get(i, "") != prev.get(i, ""))
+            n_spost = sum(
+                1 for i in stato
+                if prev.get(i, "") and stato.get(i, "") != prev.get(i, "")
+            )
         righe_passi.append({
             "N.": p["indice"],
             "Fase": p["titolo"],
             "Descrizione": p["descrizione"],
             "Riferimento normativo": p["norma"],
             "N. alunni con organismo": n_ass,
-            "Variazioni dal passo precedente": n_var,
+            "Spostamenti in questa fase": n_spost,
         })
     df_passi = pd.DataFrame(righe_passi, columns=[
         "N.", "Fase", "Descrizione", "Riferimento normativo",
-        "N. alunni con organismo", "Variazioni dal passo precedente",
+        "N. alunni con organismo", "Spostamenti in questa fase",
     ])
 
     # --- Diario per alunno ---
@@ -1917,9 +1935,27 @@ def _riga_intestazione_meta(meta: dict, parametri: dict) -> list[str]:
     righe.append(f"Soglia minima ore settimanali per organismo: {parametri.get('soglia', 45)}")
     righe.append(
         f"Iterazioni eseguite: {parametri.get('iterazioni', 0)} — "
-        f"spostamenti totali: {parametri.get('spostamenti', 0)}"
+        f"spostamenti dell'algoritmo: {parametri.get('spostamenti', 0)}"
     )
+    if parametri.get("rettifiche_manuali"):
+        righe.append(
+            f"Rettifiche manuali dell'ufficio: {parametri['rettifiche_manuali']}"
+        )
     return righe
+
+
+def _conteggi_movimenti(cronologia: dict, parametri: dict) -> dict:
+    """Restituisce una copia di `parametri` con i conteggi degli spostamenti
+    derivati dai movimenti effettivamente presenti nella cronologia, così i
+    documenti restano coerenti anche dopo eventuali rettifiche manuali."""
+    movs = cronologia.get("movimenti", [])
+    n_manual = sum(
+        1 for m in movs if m.get("passo_titolo") == "Rettifica manuale dell'ufficio"
+    )
+    par = dict(parametri)
+    par["spostamenti"] = len(movs) - n_manual
+    par["rettifiche_manuali"] = n_manual
+    return par
 
 
 def genera_excel_cronologia(
@@ -1929,8 +1965,20 @@ def genera_excel_cronologia(
     frontespizio, sintesi delle fasi, diario per alunno (variazioni
     evidenziate) e registro dei movimenti."""
     from openpyxl import load_workbook
+    from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
+
+    parametri = _conteggi_movimenti(cronologia, parametri)
+
+    def _pulisci(v):
+        # rimuove i caratteri di controllo che openpyxl rifiuta
+        if isinstance(v, str):
+            return ILLEGAL_CHARACTERS_RE.sub("", v)
+        return v
+
+    def _pulisci_df(df):
+        return df.apply(lambda col: col.map(_pulisci)) if not df.empty else df
 
     BRAND = "6E1626"
     BRAND_LIGHT = "F1DDE1"
@@ -1948,6 +1996,10 @@ def genera_excel_cronologia(
     THIN = Border(*(4 * (Side(style="thin", color="D8C3C8"),)))
 
     df_passi, df_diario, df_movimenti, intest_passi = costruisci_cronologia_dfs(cronologia)
+    df_passi = _pulisci_df(df_passi)
+    df_diario = _pulisci_df(df_diario)
+    df_movimenti = _pulisci_df(df_movimenti)
+    log_lines = [_pulisci(str(x)) for x in (log_lines or [])]
 
     def _fmt(ws, n_cols, start_row=1, wrap_last=False):
         for ci in range(1, n_cols + 1):
@@ -2003,7 +2055,7 @@ def genera_excel_cronologia(
     ws["A2"].font = SUB_FONT
     r = 4
     for riga in _riga_intestazione_meta(meta, parametri):
-        ws.cell(row=r, column=1, value=riga).font = INFO_FONT
+        ws.cell(row=r, column=1, value=_pulisci(riga)).font = INFO_FONT
         r += 1
     r += 1
     ws.cell(row=r, column=1, value="Riferimenti normativi").font = SUB_FONT
@@ -2047,7 +2099,9 @@ def genera_excel_cronologia(
     # --- Sintesi passaggi ---
     _fmt(wb["Sintesi passaggi"], df_passi.shape[1])
 
-    # --- Diario per alunno: evidenzia le variazioni tra fasi ---
+    # --- Diario per alunno: evidenzia solo gli spostamenti reali ---
+    # (riassegnazione da un organismo a un altro, o ritorno a non assegnato),
+    # non la prima assegnazione da vuoto: coerente con "N. spostamenti".
     ws_d = wb["Diario per alunno"]
     _fmt(ws_d, df_diario.shape[1])
     col_passi_idx = [
@@ -2059,7 +2113,7 @@ def genera_excel_cronologia(
                 continue
             val = ws_d.cell(row=ri, column=ci).value
             prev = ws_d.cell(row=ri, column=col_passi_idx[pos - 1]).value
-            if val != prev:
+            if prev and prev != PLACEHOLDER_NON_ASSEGNATO and val != prev:
                 ws_d.cell(row=ri, column=ci).fill = CHANGE_FILL
 
     # --- Movimenti ---
@@ -2097,9 +2151,15 @@ def genera_pdf_verbale(
     BRAND_LIGHT = colors.HexColor("#F1DDE1")
     ZEBRA = colors.HexColor("#F7F3F1")
 
-    def _xml(s):
-        # escappa &, <, > per l'interprete di markup di reportlab
-        return html.escape(str(s), quote=False)
+    parametri = _conteggi_movimenti(cronologia, parametri)
+
+    def _xml(s, maxlen=800):
+        # escappa &, <, > per l'interprete di markup di reportlab e limita
+        # la lunghezza per evitare celle più alte di una pagina
+        s = str(s)
+        if len(s) > maxlen:
+            s = s[:maxlen].rstrip() + "…"
+        return html.escape(s, quote=False)
 
     df_passi, _, df_movimenti, _ = costruisci_cronologia_dfs(cronologia)
 
@@ -2152,7 +2212,7 @@ def genera_pdf_verbale(
         Paragraph("<b>N.</b>", cell), Paragraph("<b>Fase</b>", cell),
         Paragraph("<b>Riferimento</b>", cell),
         Paragraph("<b>Alunni con<br/>organismo</b>", cell),
-        Paragraph("<b>Variazioni</b>", cell),
+        Paragraph("<b>Spostamenti<br/>nella fase</b>", cell),
     ]]
     for _, rp in df_passi.iterrows():
         dati_fasi.append([
@@ -2160,9 +2220,9 @@ def genera_pdf_verbale(
             Paragraph(f"<b>{_xml(rp['Fase'])}</b><br/>{_xml(rp['Descrizione'])}", cell),
             Paragraph(_xml(rp["Riferimento normativo"]), cell),
             Paragraph(str(rp["N. alunni con organismo"]), cell),
-            Paragraph(str(rp["Variazioni dal passo precedente"]), cell),
+            Paragraph(str(rp["Spostamenti in questa fase"]), cell),
         ])
-    t_fasi = Table(dati_fasi, colWidths=[10 * mm, 86 * mm, 46 * mm, 18 * mm, 18 * mm],
+    t_fasi = Table(dati_fasi, colWidths=[9 * mm, 81 * mm, 43 * mm, 20 * mm, 25 * mm],
                    repeatRows=1)
     t_fasi.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), BRAND),
@@ -2189,10 +2249,15 @@ def genera_pdf_verbale(
         esiti += f" &nbsp;|&nbsp; già attivati mantenuti: <b>{stats.get('gia_attivati', 0)}</b>"
     esiti += (
         f"<br/>Spostamenti operati dall'algoritmo: "
-        f"<b>{stats.get('spostamenti', 0)}</b> in "
-        f"<b>{stats.get('iterazioni', 0)}</b> iterazioni. &nbsp;|&nbsp; "
-        f"Casi da verificare: <b>{n_crit}</b>."
+        f"<b>{parametri.get('spostamenti', 0)}</b> in "
+        f"<b>{stats.get('iterazioni', 0)}</b> iterazioni."
     )
+    if parametri.get("rettifiche_manuali"):
+        esiti += (
+            f" &nbsp;|&nbsp; rettifiche manuali dell'ufficio: "
+            f"<b>{parametri['rettifiche_manuali']}</b>."
+        )
+    esiti += f" &nbsp;|&nbsp; Casi da verificare: <b>{n_crit}</b>."
     elems.append(Paragraph(esiti, normal))
 
     # --- Elenco movimenti ---
@@ -2203,10 +2268,13 @@ def genera_pdf_verbale(
             "iscrizioni sono state assegnate alla 1ª preferenza espressa "
             "nel rispetto del vincolo delle 45 ore settimanali.", normal))
     else:
+        dett = f"{parametri.get('spostamenti', 0)} dell'algoritmo"
+        if parametri.get("rettifiche_manuali"):
+            dett += f", {parametri['rettifiche_manuali']} rettifiche manuali dell'ufficio"
         elems.append(Paragraph(
-            f"Sono stati operati {len(df_movimenti)} spostamenti. Per ciascuno "
-            "si riporta l'alunno, il gruppo, l'organismo di partenza e di "
-            "destinazione e la motivazione.", normal))
+            f"Sono registrati {len(df_movimenti)} spostamenti ({dett}). Per "
+            "ciascuno si riporta l'alunno, il gruppo, l'organismo di partenza "
+            "e di destinazione e la motivazione.", normal))
         elems.append(Spacer(1, 4))
         dati_mov = [[
             Paragraph("<b>Fase</b>", cell), Paragraph("<b>Alunno</b>", cell),
@@ -3129,7 +3197,10 @@ def main():
                             df_full.at[cod, "Note"] = "Assegnazione modificata manualmente"
                             n_mod += 1
                 df_new = df_full.reset_index()
-                new_riep = costruisci_riepilogo_gruppo(df_new, soglia)
+                # usa la soglia con cui è stata eseguita l'assegnazione, non il
+                # valore live dello slider (che potrebbe essere stato spostato)
+                soglia_run = res.get("parametri", {}).get("soglia", soglia)
+                new_riep = costruisci_riepilogo_gruppo(df_new, soglia_run)
                 new_crit = costruisci_criticita(df_new)
                 st.session_state["risultati"]["df_assegnazioni"] = df_new
                 st.session_state["risultati"]["df_riepilogo"] = new_riep
@@ -3241,6 +3312,26 @@ def main():
             "(L. 241/1990) e a evidenza della logica del trattamento "
             "automatizzato (art. 22 Reg. UE 2016/679)."
         )
+
+        # genera i documenti una sola volta per stato della cronologia: la
+        # firma cambia solo su nuova esecuzione o rettifica manuale, così i
+        # rerun non li rigenerano inutilmente
+        firma_cron = (
+            n_passi, n_mov,
+            sum(len(p.get("stato", {})) for p in cronologia["passi"]),
+            tuple(sorted(parametri.items(), key=lambda kv: kv[0])),
+        )
+        cache = st.session_state.get("_cron_docs_cache")
+        if not cache or cache.get("firma") != firma_cron:
+            cache = {
+                "firma": firma_cron,
+                "xlsx": genera_excel_cronologia(
+                    cronologia, log_lines, meta_mesis, parametri),
+                "pdf": genera_pdf_verbale(
+                    cronologia, stats, log_lines, meta_mesis, parametri),
+            }
+            st.session_state["_cron_docs_cache"] = cache
+
         t1, t2 = st.columns(2)
         with t1, st.container(border=True):
             st.markdown("**Cronologia del procedimento**")
@@ -3249,12 +3340,9 @@ def main():
                 "(l'organismo ad ogni passaggio, con le variazioni evidenziate) "
                 "e il registro puntuale di ogni spostamento con la motivazione."
             )
-            xlsx_cron = genera_excel_cronologia(
-                cronologia, log_lines, meta_mesis, parametri,
-            )
             st.download_button(
                 "Scarica cronologia (.xlsx)",
-                data=xlsx_cron,
+                data=cache["xlsx"],
                 file_name="cronologia_procedimento_oepac.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -3268,12 +3356,9 @@ def main():
                 "con spazio per data e firma del responsabile: pronto da "
                 "allegare a una risposta di accesso agli atti."
             )
-            pdf_verb = genera_pdf_verbale(
-                cronologia, stats, log_lines, meta_mesis, parametri,
-            )
             st.download_button(
                 "Scarica verbale (.pdf)",
-                data=pdf_verb,
+                data=cache["pdf"],
                 file_name="verbale_procedimento_oepac.pdf",
                 mime="application/pdf",
                 use_container_width=True,

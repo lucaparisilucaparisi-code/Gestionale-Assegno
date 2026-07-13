@@ -425,6 +425,35 @@ def test_cronologia():
     check("diario 42: N. spostamenti = 1", int(riga42["N. spostamenti"]) == 1,
           str(riga42["N. spostamenti"]))
 
+    # i conteggi devono riconciliare: fasi = diario = movimenti = algoritmo
+    somma_fasi = sum(int(v) for v in df_passi["Spostamenti in questa fase"]
+                     if str(v).strip() != "")
+    somma_diario = int(df_diario["N. spostamenti"].sum())
+    check("conteggi riconciliano (fasi=diario=movimenti=stats)",
+          somma_fasi == somma_diario == len(df_mov) == stats_x["spostamenti"] == 1,
+          f"fasi={somma_fasi} diario={somma_diario} mov={len(df_mov)} stats={stats_x['spostamenti']}")
+    # nessuno spostamento fantasma nella fase "Assegnazione iniziale"
+    fase_iniz = df_passi[df_passi["Fase"] == "Assegnazione iniziale"].iloc[0]
+    check("fase 'Assegnazione iniziale': 0 spostamenti fantasma",
+          int(fase_iniz["Spostamenti in questa fase"]) == 0)
+    # stato iniziale: una nuova iscrizione NON ha organismo (vuoto)
+    idx43 = [i for i, a in anagr.items() if a["codice"] == "43"][0]
+    check("stato iniziale: nuova iscrizione senza organismo",
+          cron["passi"][0]["stato"][idx43] == "", repr(cron["passi"][0]["stato"][idx43]))
+    # stato iniziale: la riconferma mostra l'organismo pre-esistente
+    idx41 = [i for i, a in anagr.items() if a["codice"] == "41"][0]
+    check("stato iniziale: riconferma mostra organismo pre-esistente",
+          cron["passi"][0]["stato"][idx41] == "GRANDE Coop")
+
+    # caratteri di controllo nei dati non devono far crashare l'Excel
+    import copy
+    cron_cc = copy.deepcopy(cron)
+    prima_chiave = next(iter(cron_cc["anagrafica"]))
+    cron_cc["anagrafica"][prima_chiave]["cognome"] = "ROSSI\x07\x00\x1f"
+    xlsx_cc = app.genera_excel_cronologia(
+        cron_cc, ["log\x00riga"], {"municipio": "X\x1f"}, {"soglia": 45})
+    check("Excel generato con caratteri di controllo (nessun crash)", len(xlsx_cc) > 5000)
+
     # generazione documenti
     meta = {"municipio": "MUNICIPIO ROMA V", "anno": "2025/2026"}
     parametri = {"soglia": 45, "corso_anno": False,
@@ -459,6 +488,13 @@ def test_cronologia():
           cron["passi"][-1]["titolo"] == "Rettifica manuale dell'ufficio")
     mov_man = [m for m in cron["movimenti"] if m["passo_titolo"] == "Rettifica manuale dell'ufficio"]
     check("rettifica manuale registra il movimento", len(mov_man) == 1)
+    # dopo la rettifica i conteggi restano coerenti: 1 algoritmo + 1 manuale
+    par_dopo = app._conteggi_movimenti(cron, {"soglia": 45})
+    check("conteggi dopo rettifica: 1 algoritmo, 1 manuale",
+          par_dopo["spostamenti"] == 1 and par_dopo["rettifiche_manuali"] == 1,
+          str(par_dopo))
+    pdf_dopo = app.genera_pdf_verbale(cron, stats_x, res_x[3], meta, {"soglia": 45})
+    check("verbale rigenerato dopo rettifica manuale", pdf_dopo[:4] == b"%PDF")
 
 
 def test_etichetta_gruppo():
