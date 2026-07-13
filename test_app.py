@@ -367,8 +367,154 @@ def test_corso_anno_sintetico():
           res_d[4]["gia_attivati"] == 0, str(res_d[4]["gia_attivati"]))
 
 
+def test_cronologia():
+    print("\n=== Cronologia del procedimento (trasparenza) ===")
+
+    # scenario con uno spostamento forzato dal vincolo 45h:
+    # nel gruppo IC, PICCOLA (10h, 1ª pref) sotto soglia -> spostata a GRANDE
+    rows = [
+        # riconferma che porta il gruppo sopra 45h totali
+        riga("41", "RICONFERMA", "MUNICIPIO ROMA V", "RMIC000041", "IC DELTA",
+             "RMEE000041", "PLESSO DELTA", "IC", 40, org="GRANDE Coop"),
+        # nuova con 1ª pref PICCOLA (che resterà sotto 45h) e 2ª GRANDE
+        riga("42", "NUOVA ISCRIZIONE", "MUNICIPIO ROMA V", "RMIC000041", "IC DELTA",
+             "RMEE000041", "PLESSO DELTA", "IC", 10,
+             enti="PICCOLA Coop\nGRANDE Coop"),
+        # altra nuova su GRANDE per superare la soglia
+        riga("43", "NUOVA ISCRIZIONE", "MUNICIPIO ROMA V", "RMIC000041", "IC DELTA",
+             "RMEE000041", "PLESSO DELTA", "IC", 20, enti="GRANDE Coop"),
+    ]
+    df_x, cm_x, _ = app.carica_dati(costruisci_mesis(rows))
+    res_x = app.esegui_assegnazione(df_x, cm_x, 45, 50, auto_ambito=True)
+    stats_x = res_x[4]
+    cron = stats_x.get("cronologia")
+    check("cronologia presente in stats", cron is not None)
+    passi = cron["passi"]
+    titoli = [p["titolo"] for p in passi]
+    check("prima fase = stato iniziale", titoli[0].startswith("Stato iniziale"))
+    check("seconda fase = assegnazione iniziale", titoli[1] == "Assegnazione iniziale")
+    check("ultima fase = esito definitivo", titoli[-1] == "Esito definitivo")
+    check("almeno un'iterazione 45h registrata",
+          any("iterazione" in t for t in titoli), str(titoli))
+
+    # l'alunno 42 nella cronologia passa da PICCOLA a GRANDE
+    anagr = cron["anagrafica"]
+    idx42 = [i for i, a in anagr.items() if a["codice"] == "42"][0]
+    iniziale = passi[1]["stato"][idx42]
+    finale = passi[-1]["stato"][idx42]
+    check("42: assegnazione iniziale = PICCOLA Coop", iniziale == "PICCOLA Coop", iniziale)
+    check("42: esito finale = GRANDE Coop", finale == "GRANDE Coop", finale)
+
+    movimenti = cron["movimenti"]
+    mov42 = [m for m in movimenti if anagr[m["idx"]]["codice"] == "42"]
+    check("42: uno spostamento registrato con motivo", len(mov42) == 1
+          and "soglia" in mov42[0]["motivo"].lower(), str(mov42))
+    check("42: spostamento da PICCOLA a GRANDE",
+          mov42 and mov42[0]["da"] == "PICCOLA Coop" and mov42[0]["a"] == "GRANDE Coop")
+
+    # DataFrame della cronologia
+    df_passi, df_diario, df_mov, intest = app.costruisci_cronologia_dfs(cron)
+    check("df_diario ha una riga per alunno (3)", len(df_diario) == 3, str(len(df_diario)))
+    check("df_diario ha una colonna per fase", all(h in df_diario.columns for h in intest))
+    check("df_movimenti non vuoto", len(df_mov) >= 1)
+    riga42 = df_diario[df_diario["Codice Iscrizione"] == "42"].iloc[0]
+    check("diario 42: fase iniziale mostra PICCOLA",
+          riga42[intest[1]] == "PICCOLA Coop", riga42[intest[1]])
+    check("diario 42: fase finale mostra GRANDE",
+          riga42[intest[-1]] == "GRANDE Coop", riga42[intest[-1]])
+    check("diario 42: N. spostamenti = 1", int(riga42["N. spostamenti"]) == 1,
+          str(riga42["N. spostamenti"]))
+
+    # i conteggi devono riconciliare: fasi = diario = movimenti = algoritmo
+    somma_fasi = sum(int(v) for v in df_passi["Spostamenti in questa fase"]
+                     if str(v).strip() != "")
+    somma_diario = int(df_diario["N. spostamenti"].sum())
+    check("conteggi riconciliano (fasi=diario=movimenti=stats)",
+          somma_fasi == somma_diario == len(df_mov) == stats_x["spostamenti"] == 1,
+          f"fasi={somma_fasi} diario={somma_diario} mov={len(df_mov)} stats={stats_x['spostamenti']}")
+    # nessuno spostamento fantasma nella fase "Assegnazione iniziale"
+    fase_iniz = df_passi[df_passi["Fase"] == "Assegnazione iniziale"].iloc[0]
+    check("fase 'Assegnazione iniziale': 0 spostamenti fantasma",
+          int(fase_iniz["Spostamenti in questa fase"]) == 0)
+    # stato iniziale: una nuova iscrizione NON ha organismo (vuoto)
+    idx43 = [i for i, a in anagr.items() if a["codice"] == "43"][0]
+    check("stato iniziale: nuova iscrizione senza organismo",
+          cron["passi"][0]["stato"][idx43] == "", repr(cron["passi"][0]["stato"][idx43]))
+    # stato iniziale: la riconferma mostra l'organismo pre-esistente
+    idx41 = [i for i, a in anagr.items() if a["codice"] == "41"][0]
+    check("stato iniziale: riconferma mostra organismo pre-esistente",
+          cron["passi"][0]["stato"][idx41] == "GRANDE Coop")
+
+    # caratteri di controllo nei dati non devono far crashare l'Excel
+    import copy
+    cron_cc = copy.deepcopy(cron)
+    prima_chiave = next(iter(cron_cc["anagrafica"]))
+    cron_cc["anagrafica"][prima_chiave]["cognome"] = "ROSSI\x07\x00\x1f"
+    xlsx_cc = app.genera_excel_cronologia(
+        cron_cc, ["log\x00riga"], {"municipio": "X\x1f"}, {"soglia": 45})
+    check("Excel generato con caratteri di controllo (nessun crash)", len(xlsx_cc) > 5000)
+
+    # generazione documenti
+    meta = {"municipio": "MUNICIPIO ROMA V", "anno": "2025/2026"}
+    parametri = {"soglia": 45, "corso_anno": False,
+                 "iterazioni": stats_x.get("iterazioni", 0),
+                 "spostamenti": stats_x.get("spostamenti", 0)}
+    xlsx = app.genera_excel_cronologia(cron, res_x[3], meta, parametri)
+    check("genera_excel_cronologia produce un file", len(xlsx) > 5000, f"{len(xlsx)} bytes")
+    pdf = app.genera_pdf_verbale(cron, stats_x, res_x[3], meta, parametri)
+    check("genera_pdf_verbale produce un PDF",
+          len(pdf) > 2000 and pdf[:4] == b"%PDF", f"{len(pdf)} bytes")
+
+    # caso senza spostamenti: verbale/excel devono comunque generarsi
+    rows_ok = [
+        riga("51", "NUOVA ISCRIZIONE", "MUNICIPIO ROMA V", "RMIC000051", "IC EPS",
+             "RMEE000051", "PLESSO EPS", "IC", 50, enti="UNICA Coop"),
+    ]
+    df_o, cm_o, _ = app.carica_dati(costruisci_mesis(rows_ok))
+    res_o = app.esegui_assegnazione(df_o, cm_o, 45, 50, auto_ambito=True)
+    cron_o = res_o[4]["cronologia"]
+    _, _, df_mov_o, _ = app.costruisci_cronologia_dfs(cron_o)
+    check("senza spostamenti: nessun movimento", len(df_mov_o) == 0)
+    pdf_o = app.genera_pdf_verbale(cron_o, res_o[4], res_o[3], meta, parametri)
+    check("verbale generato anche senza spostamenti", pdf_o[:4] == b"%PDF")
+
+    # rettifica manuale documentata nella cronologia
+    app.registra_rettifica_manuale(cron, [{
+        "codice": "43", "cognome": "C43", "nome": "N43", "plesso": "PLESSO DELTA",
+        "gruppo_label": "Istituto Comprensivo (RMIC000041)",
+        "da": "GRANDE Coop", "a": "PICCOLA Coop",
+    }])
+    check("rettifica manuale aggiunge una fase",
+          cron["passi"][-1]["titolo"] == "Rettifica manuale dell'ufficio")
+    mov_man = [m for m in cron["movimenti"] if m["passo_titolo"] == "Rettifica manuale dell'ufficio"]
+    check("rettifica manuale registra il movimento", len(mov_man) == 1)
+    # dopo la rettifica i conteggi restano coerenti: 1 algoritmo + 1 manuale
+    par_dopo = app._conteggi_movimenti(cron, {"soglia": 45})
+    check("conteggi dopo rettifica: 1 algoritmo, 1 manuale",
+          par_dopo["spostamenti"] == 1 and par_dopo["rettifiche_manuali"] == 1,
+          str(par_dopo))
+    pdf_dopo = app.genera_pdf_verbale(cron, stats_x, res_x[3], meta, {"soglia": 45})
+    check("verbale rigenerato dopo rettifica manuale", pdf_dopo[:4] == b"%PDF")
+
+
+def test_etichetta_gruppo():
+    print("\n=== Unit: etichetta_gruppo ===")
+    for cod, desc, atteso in [
+        ("IC:RMIC8E0001", "I.C. VALENTE", "Istituto Comprensivo I.C. VALENTE (RMIC8E0001)"),
+        ("IC:RMIC8E0001", "", "Istituto Comprensivo RMIC8E0001"),
+        ("COM:Ambito 10", "", "Infanzia comunale — Ambito 10"),
+        ("PAR:Municipio V", "", "Scuola paritaria — Municipio V"),
+        ("AMB:12 - Paritario", "", "Ambito 12 - Paritario"),
+        ("PLESSO:RM1AX", "", "Plesso RM1AX"),
+        ("", "", ""),
+    ]:
+        got = app.etichetta_gruppo(cod, desc)
+        check(f"etichetta_gruppo({cod!r}, {desc!r})", got == atteso, f"ottenuto {got!r}")
+
+
 if __name__ == "__main__":
     test_unitari()
+    test_etichetta_gruppo()
     if os.path.exists(MESIS):
         test_file_reale(MESIS)
     else:
@@ -377,6 +523,7 @@ if __name__ == "__main__":
     test_sintetici()
     test_risoluzione_per_plesso()
     test_corso_anno_sintetico()
+    test_cronologia()
 
     print()
     if FALLITI:

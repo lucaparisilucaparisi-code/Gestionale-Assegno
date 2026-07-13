@@ -73,6 +73,15 @@ Il file Excel prodotto contiene i fogli:
 4. **Criticità**: solo i record con status diverso da OK, con azione suggerita
 5. Un foglio per ogni organismo (e in download separato: un .xlsx e una lettera PDF per organismo)
 
+## Trasparenza e accesso agli atti
+
+Poiché l'assegnazione è un procedimento automatizzato, il gestionale documenta con un click l'intera sequenza dei passaggi, per ricostruire il «prima e dopo» progressivo utile in caso di accesso agli atti (L. 241/1990) e a evidenza della logica del trattamento (art. 22 Reg. UE 2016/679). Nella sezione **Trasparenza e accesso agli atti** dei risultati sono disponibili:
+
+- **Cronologia del procedimento (.xlsx)**: un foglio di calcolo con il frontespizio (municipio, anno, parametri, riferimenti normativi), la sintesi delle fasi (stato iniziale dal MESIS → assegnazione iniziale → applicazione del vincolo 45h iterazione per iterazione → esito definitivo, con il numero di variazioni per fase), il **diario per alunno** (l'organismo assegnato ad ogni alunno in ciascuna fase, con le celle evidenziate dove c'è stato un cambiamento) e il **registro dei movimenti** (una riga per ogni spostamento, con l'organismo di partenza, quello di destinazione e la motivazione).
+- **Verbale del procedimento (.pdf)**: un documento formale che descrive fasi, spostamenti e riferimenti normativi, con spazio per data e firma del responsabile, pronto da allegare a una risposta di accesso agli atti.
+
+Le eventuali **rettifiche manuali** operate dall'ufficio (dalla modalità *Modifica manuale assegnazioni*) vengono aggiunte alla cronologia come fase distinta, così anche gli interventi umani sull'esito automatico restano documentati.
+
 ## Algoritmo
 
 L'algoritmo applica l'Art. 5, comma 5 delle Linee Guida: ogni Organismo deve raggiungere di norma almeno 45 ore settimanali per gruppo (eccezione: gruppi con ore totali inferiori a 45). Le riconferme e gli alunni già attivati hanno priorità per continuità (Art. 5, comma 6).
