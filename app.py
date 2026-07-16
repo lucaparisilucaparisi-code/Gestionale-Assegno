@@ -836,8 +836,16 @@ def esegui_assegnazione(
     for g in gruppi:
         ore_totali_gruppo[g] = df_work.loc[df_work["_gruppo"] == g, "_ore"].sum()
 
-    non_viable_set: dict[str, set[str]] = {g: set() for g in gruppi}
-
+    # Vincolo 45h (Art. 5, comma 5): una cooperativa è ammissibile in un
+    # gruppo solo se il totale delle ore ad essa assegnate — riconferme e
+    # alunni già attivati COMPRESI (le loro ore concorrono alla soglia) —
+    # raggiunge la soglia. La sola presenza di una riconferma NON rende
+    # ammissibile la coop se il totale resta sotto soglia. Ogni nuova
+    # iscrizione la cui cooperativa non raggiunge la soglia scorre in ordine
+    # alla preferenza successiva; il puntatore di preferenza (_pref_idx)
+    # avanza sempre in avanti, così la procedura converge in un numero finito
+    # di passi e la destinazione finale raggiunge effettivamente la soglia
+    # (o, esaurite le preferenze, la domanda va assegnata manualmente).
     for iteration in range(1, max_iter + 1):
         spostamenti = 0
 
@@ -855,32 +863,6 @@ def esegui_assegnazione(
             org_n = normalizza_nome(org)
             ore_per_coop[g][org_n] = ore_per_coop[g].get(org_n, 0) + df_work.at[idx, "_ore"]
 
-        # organismi con presenze non spostabili (riconferme o già attivati):
-        # esenti dal vincolo di viabilità perché non possono essere svuotati
-        riconferme_per_coop: dict[str, set[str]] = {g: set() for g in gruppi}
-        for idx in df_work.index[is_fisso]:
-            g = df_work.at[idx, "_gruppo"]
-            org = df_work.at[idx, "_assegnato"]
-            if org:
-                riconferme_per_coop[g].add(normalizza_nome(org))
-
-        nuovi_non_viable = []
-        for g in gruppi:
-            soglia_attiva = ore_totali_gruppo[g] >= soglia_ore
-            if not soglia_attiva:
-                continue
-            for org_n, ore in ore_per_coop[g].items():
-                if ore < soglia_ore and org_n not in riconferme_per_coop[g]:
-                    nuovi_non_viable.append((g, org_n))
-
-        if not nuovi_non_viable:
-            log.append(f"Iterazione {iteration}: nessuno spostamento — convergenza raggiunta.")
-            stats["iterazioni"] = iteration
-            break
-
-        for g, org_n in nuovi_non_viable:
-            non_viable_set[g].add(org_n)
-
         passo_idx_iter = len(cronologia_passi)
         titolo_iter = f"Applicazione vincolo {soglia_ore}h — iterazione {iteration}"
 
@@ -891,37 +873,42 @@ def esegui_assegnazione(
             ):
                 continue
             g = df_work.at[idx, "_gruppo"]
+            # eccezione: nei gruppi con monte ore totale sotto soglia la soglia
+            # non è raggiungibile da nessuna coop — l'assegnazione resta
+            if ore_totali_gruppo[g] < soglia_ore:
+                continue
             org = df_work.at[idx, "_assegnato"]
             if not org:
                 continue
             org_n = normalizza_nome(org)
-            if (g, org_n) not in [(gg, oo) for gg, oo in nuovi_non_viable]:
-                continue
+            if ore_per_coop[g].get(org_n, 0) >= soglia_ore:
+                continue  # la cooperativa attuale raggiunge le 45h: confermata
 
+            # cooperativa attuale sotto soglia (totale, riconferme comprese):
+            # scorri alla preferenza successiva espressa dalla famiglia
             g_label = cronologia_anagrafica[idx]["gruppo_label"]
             prefs = df_work.at[idx, "_preferenze"]
-            trovato = False
-            for pi in range(len(prefs)):
-                pref_n = normalizza_nome(prefs[pi])
-                if pref_n not in non_viable_set[g]:
-                    df_work.at[idx, "_assegnato"] = prefs[pi]
-                    df_work.at[idx, "_pref_idx"] = pi
-                    _registra_movimento(
-                        idx, passo_idx_iter, titolo_iter, org, prefs[pi],
-                        f"L'organismo «{org}» non raggiunge la soglia di "
-                        f"{soglia_ore}h nel gruppo «{g_label}»: la domanda è "
-                        f"riassegnata alla {pi + 1}ª preferenza espressa.",
-                    )
-                    spostamenti += 1
-                    trovato = True
-                    break
-
-            if not trovato:
+            pi = df_work.at[idx, "_pref_idx"] + 1
+            while pi < len(prefs) and normalizza_nome(prefs[pi]) == org_n:
+                pi += 1  # salta eventuali ripetizioni della stessa coop
+            if pi < len(prefs):
+                nuovo = prefs[pi]
+                df_work.at[idx, "_assegnato"] = nuovo
+                df_work.at[idx, "_pref_idx"] = pi
+                _registra_movimento(
+                    idx, passo_idx_iter, titolo_iter, org, nuovo,
+                    f"L'organismo «{org}» non raggiunge la soglia di "
+                    f"{soglia_ore}h nel gruppo «{g_label}» (somma di tutte le "
+                    "ore assegnate, riconferme comprese): la domanda è "
+                    f"riassegnata alla {pi + 1}ª preferenza espressa.",
+                )
+                spostamenti += 1
+            else:
                 df_work.at[idx, "_assegnato"] = ""
                 df_work.at[idx, "_status"] = "Da assegnare manualmente"
                 df_work.at[idx, "_note"] = (
                     "Tutte le preferenze espresse risultano sotto soglia "
-                    f"{soglia_ore}h nel plesso — assegnazione manuale necessaria"
+                    f"{soglia_ore}h nel gruppo — assegnazione manuale necessaria"
                 )
                 df_work.at[idx, "_pref_soddisfatta"] = "Non assegnato"
                 _registra_movimento(
@@ -932,6 +919,11 @@ def esegui_assegnazione(
                 )
                 spostamenti += 1
 
+        stats["iterazioni"] = iteration
+        if spostamenti == 0:
+            log.append(f"Iterazione {iteration}: nessuno spostamento — convergenza raggiunta.")
+            break
+
         log.append(
             f"Iterazione {iteration}: {spostamenti} spostamenti, "
             f"{sum(1 for i in nuove_idx if df_work.at[i, '_status'] == 'Da assegnare manualmente')} "
@@ -939,19 +931,15 @@ def esegui_assegnazione(
         )
         _registra_passo(
             titolo_iter,
-            f"{spostamenti} spostamenti: le nuove iscrizioni assegnate a un "
-            f"organismo che non raggiunge {soglia_ore} ore settimanali nel "
-            "proprio gruppo sono state riassegnate alla preferenza successiva "
-            "utile (le riconferme e gli alunni già attivati non vengono mai "
-            "spostati).",
+            f"{spostamenti} spostamenti: le nuove iscrizioni la cui "
+            f"cooperativa non raggiunge {soglia_ore} ore settimanali nel "
+            "gruppo (contando tutte le ore assegnate, riconferme comprese) "
+            "sono state riassegnate alla preferenza successiva espressa; le "
+            "riconferme e gli alunni già attivati non vengono mai spostati.",
             f"Art. 5, comma 5, Linee Guida DGC Roma Capitale n. 260/2024 "
             f"(soglia minima {soglia_ore}h per organismo)",
         )
         stats["spostamenti"] += spostamenti
-        stats["iterazioni"] = iteration
-
-        if spostamenti == 0:
-            break
     else:
         log.append(f"Raggiunto limite massimo di {max_iter} iterazioni.")
 

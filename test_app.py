@@ -274,6 +274,91 @@ def test_sintetici():
           len(chk_amb) == 1 and chk_amb[0][1] is False, str(chk_amb))
 
 
+def test_vincolo_45h_riassegnazione():
+    print("\n=== Vincolo 45h in riassegnazione (riconferme contano ma non esentano) ===")
+    G = ("MUNICIPIO ROMA V", "RMIC0000IC", "IC TEST", "RMEE0000IC", "PLESSO", "IC")
+
+    def r_ric(cod, ore, org):
+        return riga(cod, "RICONFERMA", *G, ore, org=org)
+
+    def r_nuova(cod, ore, prefs):
+        return riga(cod, "NUOVA ISCRIZIONE", *G, ore, enti="\n".join(prefs))
+
+    ORG = "Organismo Assegnato dall'Algoritmo"
+
+    def esegui(rows):
+        df, cm, _ = app.carica_dati(costruisci_mesis(rows))
+        return app.esegui_assegnazione(df, cm, 45, 50, auto_ambito=True)[0].set_index("Codice Iscrizione")
+
+    # Scenario 1: una coop con SOLA riconferma sotto 45h non è valida per una
+    # nuova; la nuova va scalata alla preferenza successiva che raggiunge 45h.
+    r = esegui([
+        r_ric("R1", 30, "Coop-X"),   # Coop-X: 30h di riconferma
+        r_ric("R2", 50, "Coop-Z"),   # Coop-Z: 50h di riconferma (valida)
+        r_nuova("A", 10, ["Coop-X", "Coop-Z"]),
+    ])
+    check("scenario 1: nuova NON resta su coop sotto 45h con sola riconferma",
+          r.at["A", ORG] == "Coop-Z" and r.at["A", "Preferenza Soddisfatta"] == "2ª",
+          f"A -> {r.at['A', ORG]} ({r.at['A', 'Preferenza Soddisfatta']})")
+
+    # Scenario 2: la nuova si aggiunge a una coop con riconferma portandola a
+    # 45h (le ore delle riconferme concorrono alla soglia).
+    r2 = esegui([
+        r_ric("R1", 40, "Coop-X"),
+        r_ric("R2", 60, "Coop-W"),
+        r_nuova("A", 10, ["Coop-Y", "Coop-X"]),  # Coop-Y solo A (10h), poi Coop-X
+    ])
+    check("scenario 2: nuova si aggiunge alla riconferma (40+10=50h, valida)",
+          r2.at["A", ORG] == "Coop-X" and r2.at["A", "Status"] == "OK",
+          f"A -> {r2.at['A', ORG]} status={r2.at['A', 'Status']}")
+
+    # Scenario 3: nessuna preferenza raggiunge 45h -> da assegnare manualmente
+    r3 = esegui([
+        r_ric("R1", 60, "Coop-BIG"),  # tiene il gruppo sopra 45h totali
+        r_nuova("A", 10, ["Coop-P", "Coop-Q"]),  # entrambe solo A (10h)
+    ])
+    check("scenario 3: nessuna preferenza a 45h -> da assegnare manualmente",
+          r3.at["A", "Status"] == "Da assegnare manualmente",
+          f"A status={r3.at['A', 'Status']}")
+
+    # Scenario 4: gruppo con monte ore totale sotto 45h -> eccezione, nessuno spostato
+    r4 = esegui([
+        r_nuova("A", 10, ["Coop-P", "Coop-Q"]),
+        r_nuova("B", 15, ["Coop-P"]),
+    ])
+    check("scenario 4: gruppo sotto 45h totali -> nuove restano sulla 1ª (eccezione)",
+          r4.at["A", "Preferenza Soddisfatta"] == "1ª"
+          and r4.at["B", "Preferenza Soddisfatta"] == "1ª",
+          f"A={r4.at['A', 'Preferenza Soddisfatta']} B={r4.at['B', 'Preferenza Soddisfatta']}")
+
+    # Proprietà generale: nessuna nuova assegnata resta su una coop sotto 45h
+    # (quando il gruppo raggiunge 45h totali). Riconferme escluse (continuità).
+    import re as _re
+
+    def _norm(s):
+        return _re.sub(r"\s+", " ", str(s).strip()).casefold()
+
+    for scen, rows in [("multi", [
+        r_ric("R1", 30, "Coop-X"), r_ric("R2", 20, "Coop-Y"),
+        r_nuova("A", 10, ["Coop-X", "Coop-Y", "Coop-Z"]),
+        r_nuova("B", 40, ["Coop-Z"]),
+        r_nuova("C", 10, ["Coop-Y", "Coop-Z"]),
+    ])]:
+        rr = esegui(rows)
+        gtot = rr["Ore Assegnate"].sum()
+        ore = {}
+        for cod, row in rr.iterrows():
+            if row[ORG]:
+                ore[_norm(row[ORG])] = ore.get(_norm(row[ORG]), 0) + row["Ore Assegnate"]
+        viol = 0
+        for cod, row in rr.iterrows():
+            if not row[ORG] or row["Preferenza Soddisfatta"] in ("Riconferma", "Già attivato"):
+                continue
+            if gtot >= 45 and ore[_norm(row[ORG])] < 45:
+                viol += 1
+        check(f"proprietà ({scen}): nessuna nuova assegnata sotto 45h", viol == 0, f"{viol} violazioni")
+
+
 def test_risoluzione_per_plesso():
     print("\n=== Risoluzione per plesso (regressioni review) ===")
 
@@ -521,6 +606,7 @@ if __name__ == "__main__":
         print(f"\n(SKIP) File MESIS reale non trovato ({MESIS}): "
               "salto i test di integrazione sul file reale.")
     test_sintetici()
+    test_vincolo_45h_riassegnazione()
     test_risoluzione_per_plesso()
     test_corso_anno_sintetico()
     test_cronologia()
