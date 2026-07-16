@@ -84,4 +84,6 @@ Le eventuali **rettifiche manuali** operate dall'ufficio (dalla modalità *Modif
 
 ## Algoritmo
 
-L'algoritmo applica l'Art. 5, comma 5 delle Linee Guida: ogni Organismo deve raggiungere di norma almeno 45 ore settimanali per gruppo (eccezione: gruppi con ore totali inferiori a 45). Le riconferme e gli alunni già attivati hanno priorità per continuità (Art. 5, comma 6).
+L'algoritmo applica l'Art. 5, comma 5 delle Linee Guida: ogni Organismo deve raggiungere di norma almeno 45 ore settimanali per gruppo (eccezione: gruppi con ore totali inferiori a 45). Le riconferme e gli alunni già attivati hanno priorità per continuità (Art. 5, comma 6) e non vengono mai spostati.
+
+La soglia delle 45 ore vale per tutte le scelte: quando la cooperativa scelta da una nuova iscrizione non raggiunge le 45 ore nel gruppo, la domanda viene scalata alla preferenza successiva espressa dalla famiglia, e così via **finché non trova, nell'ordine di preferenza, una cooperativa che raggiunge effettivamente le 45 ore**; se nessuna preferenza le raggiunge, la domanda resta «da assegnare manualmente». Le ore delle riconferme e degli alunni già attivati **concorrono** al raggiungimento delle 45 ore di una cooperativa (continuità dell'operatore già presente), ma la sola presenza di una riconferma **non rende ammissibile** una cooperativa che nel complesso resta sotto le 45 ore.
