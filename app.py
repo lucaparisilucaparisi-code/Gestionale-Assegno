@@ -456,6 +456,13 @@ def parse_preferenze(testo: str) -> list[str]:
     return preferenze
 
 
+def formatta_preferenze(prefs) -> str:
+    """Elenca le preferenze della famiglia in ordine: '1ª X · 2ª Y · 3ª Z'."""
+    if not prefs:
+        return ""
+    return "  ·  ".join(f"{i}ª {p}" for i, p in enumerate(prefs, 1))
+
+
 # ---------------------------------------------------------------------------
 # Column mapping — maps spec names to actual Excel header variations
 # ---------------------------------------------------------------------------
@@ -630,7 +637,8 @@ def esegui_assegnazione(
         "Codice Meccanografico Plesso", "Plesso", "Indirizzo Plesso",
         "Grado Scolastico", "Classe", "Sezione", "Ambito",
         "Tipo Gestione", "Fonte Classificazione", "Municipio", "Gruppo 45h",
-        "Ore Richieste", "Ore Assegnate", "Organismo Pre-esistente",
+        "Ore Richieste", "Ore Assegnate", "Organismo attuale",
+        "Preferenze della famiglia (in ordine)",
         "Organismo Assegnato dall'Algoritmo", "Preferenza Soddisfatta",
         "Data Attivazione", "Settimane set-dic", "Settimane gen-giu",
         "Settimane totali", "Status", "Note",
@@ -1140,7 +1148,10 @@ def esegui_assegnazione(
             "Gruppo 45h": df_work.at[idx, "_gruppo"],
             "Ore Richieste": df_work.at[idx, ore_rich_col] if ore_rich_col else "",
             "Ore Assegnate": df_work.at[idx, "_ore"],
-            "Organismo Pre-esistente": df_work.at[idx, "_org_orig"] if isinstance(df_work.at[idx, "_org_orig"], str) else "",
+            "Organismo attuale": df_work.at[idx, "_org_orig"] if isinstance(df_work.at[idx, "_org_orig"], str) else "",
+            "Preferenze della famiglia (in ordine)": formatta_preferenze(
+                df_work.at[idx, "_preferenze"]
+            ),
             "Organismo Assegnato dall'Algoritmo": df_work.at[idx, "_assegnato"],
             "Preferenza Soddisfatta": df_work.at[idx, "_pref_soddisfatta"],
             "Data Attivazione": data_att_val,
@@ -2672,8 +2683,8 @@ def verifiche_consistenza(
     riconferme_spostate = df_result.loc[
         (df_result["Tipo"].str.strip().str.upper() == "RICONFERMA")
         & (df_result["Organismo Assegnato dall'Algoritmo"] != "")
-        & (df_result["Organismo Pre-esistente"] != "")
-        & (df_result["Organismo Assegnato dall'Algoritmo"] != df_result["Organismo Pre-esistente"])
+        & (df_result["Organismo attuale"] != "")
+        & (df_result["Organismo Assegnato dall'Algoritmo"] != df_result["Organismo attuale"])
     ]
     ok_ric = len(riconferme_spostate) == 0
     checks.append((
@@ -2685,7 +2696,7 @@ def verifiche_consistenza(
     if "Preferenza Soddisfatta" in df_result.columns:
         attivati_spostati = df_result.loc[
             (df_result["Preferenza Soddisfatta"] == "Già attivato")
-            & (df_result["Organismo Assegnato dall'Algoritmo"] != df_result["Organismo Pre-esistente"])
+            & (df_result["Organismo Assegnato dall'Algoritmo"] != df_result["Organismo attuale"])
         ]
         ok_att = len(attivati_spostati) == 0
         if (df_result["Preferenza Soddisfatta"] == "Già attivato").any():
@@ -3421,7 +3432,7 @@ def main():
             df_display["Organismo Assegnato dall'Algoritmo"].apply(
                 lambda x: nomi_uguali(x, filtro_org) if isinstance(x, str) else False
             )
-            | df_display["Organismo Pre-esistente"].apply(
+            | df_display["Organismo attuale"].apply(
                 lambda x: nomi_uguali(x, filtro_org) if isinstance(x, str) else False
             )
         )

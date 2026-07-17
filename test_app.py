@@ -179,7 +179,7 @@ def test_file_reale(percorso):
     df_ca, _, _, log_ca, stats_ca, _ = res_ca
     att = df_ca[df_ca["Preferenza Soddisfatta"] == "Già attivato"]
     check("corso d'anno: attivati mantenuti sul loro organismo",
-          (att["Organismo Assegnato dall'Algoritmo"] == att["Organismo Pre-esistente"]).all())
+          (att["Organismo Assegnato dall'Algoritmo"] == att["Organismo attuale"]).all())
     check("corso d'anno: conteggio attivati coerente",
           stats_ca["gia_attivati"] == len(att), f"{stats_ca['gia_attivati']} vs {len(att)}")
 
@@ -675,7 +675,7 @@ def test_attribuzione_report():
             "Indirizzo Plesso": "", "Grado Scolastico": "Primaria statale",
             "Classe": "1", "Sezione": "A", "Ambito": "IC", "Tipo Gestione": "Statale",
             "Fonte Classificazione": "codice", "Municipio": "V", "Gruppo 45h": "IC:RMIC1",
-            "Ore Richieste": ore, "Ore Assegnate": ore, "Organismo Pre-esistente": "",
+            "Ore Richieste": ore, "Ore Assegnate": ore, "Organismo attuale": "",
             ORG: org, "Preferenza Soddisfatta": "1ª", "Data Attivazione": "",
             "Status": "OK", "Note": "",
         }
@@ -723,6 +723,40 @@ def test_attribuzione_report():
     fogli_org = [s for s in wb.sheetnames if s not in std]
     check("un foglio distinto per ciascuna cooperativa", len(fogli_org) == 2,
           str(fogli_org))
+
+
+def test_layout_preferenze():
+    print("\n=== Layout report: preferenze della famiglia in ordine ===")
+    check("formatta_preferenze in ordine con ª",
+          app.formatta_preferenze(["COOP A", "COOP B"]) == "1ª COOP A  ·  2ª COOP B",
+          app.formatta_preferenze(["COOP A", "COOP B"]))
+    check("formatta_preferenze vuote -> stringa vuota",
+          app.formatta_preferenze([]) == "")
+
+    G = ("MUNICIPIO ROMA V", "RM1A05300V", "GRAZIA DELEDDA - COMUNALE",
+         "RM1A05300V", "GRAZIA DELEDDA - COMUNALE", "12")
+    rows = [
+        riga("41565", "NUOVA ISCRIZIONE", *G, 8,
+             org="ARCA DI NOE'", enti="NUOVA SAIR\nARCA DI NOE'",
+             att="2026-06-17 00:00:00"),
+        riga("A1", "NUOVA ISCRIZIONE", *G, 45, enti="NUOVA SAIR"),
+    ]
+    df, cm, _ = app.carica_dati(costruisci_mesis(rows))
+    res = app.esegui_assegnazione(df, cm, 45, 50, auto_ambito=True, anno_start=2025)
+    da = res[0]
+    cols = list(da.columns)
+    # ordine: attuale -> preferenze -> assegnato -> preferenza soddisfatta
+    seq = ["Organismo attuale", "Preferenze della famiglia (in ordine)",
+           "Organismo Assegnato dall'Algoritmo", "Preferenza Soddisfatta"]
+    idxs = [cols.index(c) for c in seq if c in cols]
+    check("colonne presenti e in ordine (attuale->preferenze->assegnato->esito)",
+          len(idxs) == 4 and idxs == sorted(idxs), str(idxs))
+    row = da[da["Codice Iscrizione"] == "41565"].iloc[0]
+    check("preferenze mostrate in ordine per l'alunno",
+          row["Preferenze della famiglia (in ordine)"] == "1ª NUOVA SAIR  ·  2ª ARCA DI NOE'",
+          row["Preferenze della famiglia (in ordine)"])
+    check("nessuna colonna 'Organismo Pre-esistente' residua",
+          "Organismo Pre-esistente" not in cols)
 
 
 def test_logo():
@@ -858,6 +892,7 @@ if __name__ == "__main__":
     test_nat_riparametrazione()
     test_attribuzione_report()
     test_settimane_periodi()
+    test_layout_preferenze()
     test_logo()
 
     print()
