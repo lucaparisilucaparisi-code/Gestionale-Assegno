@@ -1462,6 +1462,11 @@ def genera_excel(
     coop_cols = colonne_coop(perc_decurtazione, aliquota_iva)
     coop_cols_available = [c for c in coop_cols if c in df_eco.columns]
 
+    # nome del foglio effettivamente creato per ciascun organismo: memorizzato
+    # alla creazione e riusato in seguito, per evitare ogni ambiguità quando
+    # più organismi hanno nomi con lo stesso prefisso (troncato a 28 caratteri)
+    org_sheet_names: dict[str, str] = {}
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df_eco.to_excel(writer, sheet_name="Assegnazioni", index=False)
@@ -1483,6 +1488,7 @@ def genera_excel(
                 final_name = f"{safe_name[:25]}_{counter}"
                 counter += 1
 
+            org_sheet_names[org] = final_name
             df_o.to_excel(writer, sheet_name=final_name, index=False, startrow=5)
 
     output.seek(0)
@@ -1509,14 +1515,10 @@ def genera_excel(
 
     today_str = datetime.date.today().strftime("%d/%m/%Y")
     for org in organismi:
-        safe_name = re.sub(r"[\\/*?\[\]:]", "", org)[:28].strip() or "Organismo"
-        ws = None
-        for s in wb.sheetnames:
-            if s.startswith(safe_name[:20]):
-                ws = wb[s]
-                break
-        if ws is None:
+        sheet_name = org_sheet_names.get(org)
+        if not sheet_name or sheet_name not in wb.sheetnames:
             continue
+        ws = wb[sheet_name]
 
         mask = df_eco["Organismo Assegnato dall'Algoritmo"] == org
         df_o = df_eco.loc[mask]

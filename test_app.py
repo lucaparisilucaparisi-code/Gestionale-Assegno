@@ -582,6 +582,70 @@ def test_cronologia():
     check("verbale rigenerato dopo rettifica manuale", pdf_dopo[:4] == b"%PDF")
 
 
+def test_attribuzione_report():
+    print("\n=== Attribuzione dei fogli per-organismo nel report ===")
+    from openpyxl import load_workbook
+    ORG = "Organismo Assegnato dall'Algoritmo"
+
+    def _riga_report(cod, org, ore):
+        return {
+            "Codice Iscrizione": cod, "Tipo": "NUOVA ISCRIZIONE",
+            "Cognome": "C" + cod, "Nome": "N" + cod, "Data Nascita": "",
+            "Età": 6, "Codice Meccanografico Istituto": "RMIC1", "Istituto": "IC TEST",
+            "Codice Meccanografico Plesso": "RMEE1", "Plesso": "PLESSO",
+            "Indirizzo Plesso": "", "Grado Scolastico": "Primaria statale",
+            "Classe": "1", "Sezione": "A", "Ambito": "IC", "Tipo Gestione": "Statale",
+            "Fonte Classificazione": "codice", "Municipio": "V", "Gruppo 45h": "IC:RMIC1",
+            "Ore Richieste": ore, "Ore Assegnate": ore, "Organismo Pre-esistente": "",
+            ORG: org, "Preferenza Soddisfatta": "1ª", "Data Attivazione": "",
+            "Status": "OK", "Note": "",
+        }
+
+    # due cooperative con lo STESSO prefisso lungo: i fogli si troncano uguali
+    # e vengono deduplicati -> il vecchio ritrovamento per prefisso sbagliava
+    org_a = "CONSORZIO COOPERATIVE SOCIALI ALFA"
+    org_b = "CONSORZIO COOPERATIVE SOCIALI BETA"
+    df = pd.DataFrame([
+        _riga_report("1", org_a, 50),
+        _riga_report("2", org_a, 40),
+        _riga_report("3", org_b, 30),
+    ])
+    riep = app.costruisci_riepilogo_gruppo(df, 45)
+    crit = app.costruisci_criticita(df)
+    wb = load_workbook(io.BytesIO(app.genera_excel(df, riep, crit)))
+    std = ("Assegnazioni", "Riepilogo Gruppo", "Riepilogo Economico", "Criticita")
+
+    def _norm(s):
+        return app.normalizza_nome(s)
+
+    errori = 0
+    for s in wb.sheetnames:
+        if s in std:
+            continue
+        ws = wb[s]
+        titolo = ws.cell(row=2, column=1).value  # nome org nell'intestazione
+        hdr = [ws.cell(row=6, column=c).value for c in range(1, ws.max_column + 1)]
+        ci_cod = hdr.index("Codice Iscrizione") + 1
+        # a quale org appartengono i codici presenti nel foglio?
+        codici = []
+        for rr in range(7, ws.max_row + 1):
+            v = ws.cell(row=rr, column=ci_cod).value
+            if v is not None and not str(v).startswith("TOTALE"):
+                codici.append(str(v))
+        org_dati = {df.loc[df["Codice Iscrizione"] == c, ORG].iloc[0]
+                    for c in codici if (df["Codice Iscrizione"] == c).any()}
+        # il titolo del foglio deve coincidere con l'organismo dei dati
+        if len(org_dati) == 1 and _norm(titolo) != _norm(next(iter(org_dati))):
+            errori += 1
+    check("fogli per-organismo: titolo coerente con i dati (prefissi uguali)",
+          errori == 0, f"{errori} fogli mal attribuiti")
+
+    # ogni organismo ha un proprio foglio distinto
+    fogli_org = [s for s in wb.sheetnames if s not in std]
+    check("un foglio distinto per ciascuna cooperativa", len(fogli_org) == 2,
+          str(fogli_org))
+
+
 def test_etichetta_gruppo():
     print("\n=== Unit: etichetta_gruppo ===")
     for cod, desc, atteso in [
@@ -610,6 +674,7 @@ if __name__ == "__main__":
     test_risoluzione_per_plesso()
     test_corso_anno_sintetico()
     test_cronologia()
+    test_attribuzione_report()
 
     print()
     if FALLITI:
