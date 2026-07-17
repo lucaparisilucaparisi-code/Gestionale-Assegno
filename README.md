@@ -84,7 +84,7 @@ Un'anagrafe utilizzabile è scaricabile dal portale [dati.istruzione.it](https:/
 
 Il file Excel prodotto contiene i fogli:
 
-1. **Assegnazioni**: una riga per alunno con tutti i dati (compresi Tipo Gestione, Municipio e Gruppo 45h) e l'esito dell'algoritmo
+1. **Assegnazioni**: una riga per alunno con tutti i dati (compresi Tipo Gestione, Municipio e Gruppo 45h) e l'esito dell'algoritmo. Le colonne dell'esito seguono un ordine leggibile come una storia: *Organismo attuale* (dove si trova l'alunno, se già in servizio) → *Preferenze della famiglia (in ordine)* (le scelte espresse: 1ª, 2ª, …) → *Organismo Assegnato dall'Algoritmo* → *Preferenza Soddisfatta*. Così è evidente, ad esempio, quando l'assegnazione onora la prima preferenza della famiglia anche se diversa dall'organismo attuale. Gli alunni **già in servizio** assegnati a un organismo diverso (per preferenza) sono segnalati nella colonna *Note* e contati a video, per un'eventuale valutazione della continuità (non sono errori). Le preferenze della famiglia compaiono solo in questo foglio riservato all'ufficio, non nei file/lettere per le cooperative.
 2. **Riepilogo Gruppo**: tabella aggregata per gruppo 45h × Organismo con ore totali e verifica soglia
 3. **Riepilogo Economico**: importi per organismo, suddivisi nei due periodi (set-dic e gen-giu) e in totale annuo
 4. **Criticità**: solo i record con status diverso da OK, con azione suggerita

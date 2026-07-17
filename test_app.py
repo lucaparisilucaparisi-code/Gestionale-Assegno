@@ -758,6 +758,15 @@ def test_layout_preferenze():
     check("nessuna colonna 'Organismo Pre-esistente' residua",
           "Organismo Pre-esistente" not in cols)
 
+    # segnalazione "già in servizio riassegnato per preferenza"
+    check("conteggio gia_servizio_riassegnati = 1",
+          res[4].get("gia_servizio_riassegnati") == 1,
+          str(res[4].get("gia_servizio_riassegnati")))
+    check("nota di continuità presente sulla riga",
+          "Già in servizio" in str(row["Note"]), str(row["Note"]))
+    check("l'assegnazione per preferenza NON è una criticità (Status OK)",
+          row["Status"] == "OK", row["Status"])
+
 
 def test_logo():
     print("\n=== Logo del gestionale ===")

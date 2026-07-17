@@ -608,6 +608,7 @@ def esegui_assegnazione(
         "riconferme": 0,
         "nuove_iscrizioni": 0,
         "gia_attivati": 0,
+        "gia_servizio_riassegnati": 0,
         "criticita": 0,
         "spostamenti": 0,
         "iterazioni": 0,
@@ -1000,6 +1001,28 @@ def esegui_assegnazione(
         pi = df_work.at[idx, "_pref_idx"]
         df_work.at[idx, "_pref_soddisfatta"] = f"{pi + 1}ª"
         df_work.at[idx, "_status"] = "OK"
+
+    # Segnala le nuove iscrizioni GIÀ IN SERVIZIO (avevano già un organismo)
+    # assegnate a un organismo DIVERSO seguendo le preferenze della famiglia:
+    # non è un errore (la 1ª/2ª preferenza è stata onorata), ma l'ufficio può
+    # volerne valutare la continuità prima di validare.
+    n_serv_riass = 0
+    for idx in nuove_idx:
+        if df_work.at[idx, "_status"] != "OK":
+            continue
+        attuale = df_work.at[idx, "_org_orig"]
+        assegnato = df_work.at[idx, "_assegnato"]
+        if (isinstance(attuale, str) and attuale.strip() and assegnato
+                and normalizza_nome(attuale) != normalizza_nome(assegnato)):
+            pref = df_work.at[idx, "_pref_soddisfatta"]
+            nota = (
+                f"Già in servizio presso «{attuale.strip()}»: assegnato alla "
+                f"{pref} preferenza «{assegnato}» — verificare la continuità"
+            )
+            esistente = df_work.at[idx, "_note"]
+            df_work.at[idx, "_note"] = f"{esistente} · {nota}" if esistente else nota
+            n_serv_riass += 1
+    stats["gia_servizio_riassegnati"] = n_serv_riass
 
     ore_per_coop_final: dict[str, dict[str, float]] = {g: {} for g in gruppi}
     for idx in df_work.index:
@@ -3409,6 +3432,17 @@ def main():
     with rc3:
         n_crit = stats["criticita"]
         st.metric("Casi da verificare", n_crit, delta=None if n_crit == 0 else f"{n_crit} criticita", delta_color="off" if n_crit == 0 else "inverse")
+
+    n_serv = stats.get("gia_servizio_riassegnati", 0)
+    if n_serv > 0:
+        st.info(
+            f"ℹ️ **{n_serv} alunni erano già in servizio** presso un organismo "
+            "e sono stati assegnati a un organismo **diverso** seguendo le "
+            "preferenze della famiglia. Non è un errore, ma se vuoi valutarne "
+            "la **continuità** le trovi nella scheda *Assegnazioni*: sono le "
+            "righe con *Organismo attuale* diverso da *Organismo Assegnato* "
+            "(con la spiegazione nella colonna **Note**)."
+        )
 
     checks = verifiche_consistenza(
         df_assegnazioni, res["df_raw"], res["col_map"], stats,
