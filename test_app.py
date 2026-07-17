@@ -818,6 +818,41 @@ def test_modifica_manuale_report():
           f"{n_fasi0} -> {len(stats['cronologia']['passi'])}")
 
 
+def test_zip_completo():
+    print("\n=== Scarica tutto: un unico ZIP con tutti i documenti ===")
+    import io, zipfile
+    G = ("MUNICIPIO ROMA V", "RMIC0000IC", "IC TEST", "RMEE0000IC", "PLESSO", "IC")
+    rows = [riga("X", "NUOVA ISCRIZIONE", *G, 45, enti="COOP A"),
+            riga("Y", "NUOVA ISCRIZIONE", *G, 45, enti="COOP B")]
+    df, cm, _ = app.carica_dati(costruisci_mesis(rows))
+    r = app.esegui_assegnazione(df, cm, 45, 50, auto_ambito=True)
+    da, riep, crit, log, stats = r[0], r[1], r[2], r[3], r[4]
+    meta = {"anno": "2025/2026"}; par = {"soglia": 45, "spostamenti": 0, "iterazioni": 1}
+    ex = app.genera_excel(da, riep, crit, 35, 11, 24.07, 5)
+    zx = app.genera_zip_excel_cooperative(da, riep, crit, 35, 11, 24.07, 5)
+    zp = app.genera_zip_pdf_cooperative(da, 35, 11, 24.07, 5)
+    cx = app.genera_excel_cronologia(stats["cronologia"], log, meta, par)
+    vp = app.genera_pdf_verbale(stats["cronologia"], stats, log, meta, par)
+    tutto = app.genera_zip_completo(ex, zx, zp, cx, vp)
+    z = zipfile.ZipFile(io.BytesIO(tutto))
+    names = z.namelist()
+    check("ZIP contiene il report completo", "1_report_completo.xlsx" in names)
+    check("ZIP contiene i file per organismo",
+          any(n.startswith("2_file_per_organismo/") and n.endswith(".xlsx") for n in names))
+    check("ZIP contiene le lettere PDF",
+          any(n.startswith("3_lettere_di_assegnazione/") and n.endswith(".pdf") for n in names))
+    check("ZIP contiene cronologia e verbale",
+          "4_trasparenza/cronologia_procedimento.xlsx" in names
+          and "4_trasparenza/verbale_procedimento.pdf" in names)
+    check("tutti i file nello ZIP sono integri", z.testzip() is None)
+    # senza cronologia: lo ZIP si costruisce comunque (solo i primi documenti)
+    tutto2 = app.genera_zip_completo(ex, zx, zp, None, None)
+    names2 = zipfile.ZipFile(io.BytesIO(tutto2)).namelist()
+    check("senza cronologia: ZIP valido senza cartella trasparenza",
+          "1_report_completo.xlsx" in names2
+          and not any(n.startswith("4_trasparenza") for n in names2))
+
+
 def test_logo():
     print("\n=== Logo del gestionale ===")
     check("file logo presente", app.logo_path() is not None, str(app.LOGO_PATH))
@@ -953,6 +988,7 @@ if __name__ == "__main__":
     test_settimane_periodi()
     test_layout_preferenze()
     test_modifica_manuale_report()
+    test_zip_completo()
     test_logo()
 
     print()

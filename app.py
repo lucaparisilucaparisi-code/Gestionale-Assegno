@@ -2083,6 +2083,32 @@ def genera_zip_pdf_cooperative(
     return zip_buf.getvalue()
 
 
+def genera_zip_completo(
+    excel_bytes: bytes, zip_xlsx_bytes: bytes, zip_pdf_bytes: bytes,
+    cron_xlsx: bytes | None = None, verbale_pdf: bytes | None = None,
+) -> bytes:
+    """Raccoglie TUTTI i documenti in un unico file .zip ordinato, così
+    l'ufficio scarica un solo file invece di molti (niente file sparsi).
+    Riusa i documenti già generati, senza rigenerarli."""
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("1_report_completo.xlsx", excel_bytes)
+        with zipfile.ZipFile(io.BytesIO(zip_xlsx_bytes)) as z:
+            for n in z.namelist():
+                zf.writestr(f"2_file_per_organismo/{n}", z.read(n))
+        with zipfile.ZipFile(io.BytesIO(zip_pdf_bytes)) as z:
+            for n in z.namelist():
+                zf.writestr(f"3_lettere_di_assegnazione/{n}", z.read(n))
+        if cron_xlsx is not None:
+            zf.writestr("4_trasparenza/cronologia_procedimento.xlsx", cron_xlsx)
+        if verbale_pdf is not None:
+            zf.writestr("4_trasparenza/verbale_procedimento.pdf", verbale_pdf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Documentazione del procedimento (trasparenza / accesso agli atti)
 # ---------------------------------------------------------------------------
@@ -3613,6 +3639,65 @@ def main():
             st.text(entry)
 
     st.markdown("##### Documenti da scaricare")
+
+    cronologia = stats.get("cronologia")
+    has_cron = bool(cronologia and cronologia.get("passi"))
+
+    # Genera e mette in cache TUTTI i documenti una sola volta per stato dei
+    # dati: i rerun non li rigenerano; dopo una modifica manuale la firma
+    # (contenuto delle assegnazioni + parametri economici) cambia e i
+    # documenti — compreso lo ZIP "Scarica tutto" — si aggiornano.
+    firma_rep = (
+        int(pd.util.hash_pandas_object(df_assegnazioni, index=True).sum()),
+        n_settimane, perc_decurtazione, costo_orario, aliquota_iva, has_cron,
+    )
+    cache_rep = st.session_state.get("_reports_cache")
+    if not cache_rep or cache_rep.get("firma") != firma_rep:
+        excel_bytes = genera_excel(
+            df_assegnazioni, df_riepilogo, df_criticita,
+            n_settimane, perc_decurtazione, costo_orario, aliquota_iva)
+        zip_xlsx = genera_zip_excel_cooperative(
+            df_assegnazioni, df_riepilogo, df_criticita,
+            n_settimane, perc_decurtazione, costo_orario, aliquota_iva)
+        zip_pdf = genera_zip_pdf_cooperative(
+            df_assegnazioni, n_settimane, perc_decurtazione, costo_orario, aliquota_iva)
+        cron_xlsx = verbale_pdf = None
+        if has_cron:
+            parametri = dict(res.get("parametri", {}))
+            parametri.setdefault("soglia", 45)
+            parametri["corso_anno"] = res.get("corso_anno", parametri.get("corso_anno", False))
+            meta_mesis = res.get("meta_mesis", {})
+            cron_xlsx = genera_excel_cronologia(cronologia, log_lines, meta_mesis, parametri)
+            verbale_pdf = genera_pdf_verbale(cronologia, stats, log_lines, meta_mesis, parametri)
+        cache_rep = {
+            "firma": firma_rep,
+            "excel": excel_bytes, "zip_xlsx": zip_xlsx, "zip_pdf": zip_pdf,
+            "cron_xlsx": cron_xlsx, "verbale_pdf": verbale_pdf,
+            "tutto": genera_zip_completo(excel_bytes, zip_xlsx, zip_pdf, cron_xlsx, verbale_pdf),
+        }
+        st.session_state["_reports_cache"] = cache_rep
+
+    muni = (res.get("meta_mesis", {}) or {}).get("municipio", "")
+    nome_tutto = "OEPAC_" + (_safe_filename(muni) if muni else "assegnazioni") + "_tutto.zip"
+    with st.container(border=True):
+        st.markdown("**⭐ Scarica tutto in un unico file**")
+        st.caption(
+            "Un solo file .zip con tutti i documenti ordinati in cartelle "
+            "(report completo, file e lettere per organismo, cronologia e "
+            "verbale): scarichi un unico file, senza sparpagliare documenti "
+            "nella cartella Download."
+        )
+        st.download_button(
+            "Scarica tutto (.zip)",
+            data=cache_rep["tutto"],
+            file_name=nome_tutto,
+            mime="application/zip",
+            type="primary",
+            use_container_width=True,
+            icon=":material/folder_zip:",
+        )
+
+    st.caption("Oppure scarica i singoli documenti:")
     d1, d2, d3 = st.columns(3)
     with d1, st.container(border=True):
         st.markdown("**Report completo**")
@@ -3621,16 +3706,11 @@ def main():
             "gruppi 45h, riepilogo economico, criticità e un foglio per "
             "ogni organismo."
         )
-        excel_bytes = genera_excel(
-            df_assegnazioni, df_riepilogo, df_criticita,
-            n_settimane, perc_decurtazione, costo_orario, aliquota_iva,
-        )
         st.download_button(
             "Scarica report completo (.xlsx)",
-            data=excel_bytes,
+            data=cache_rep["excel"],
             file_name="assegnazioni_output.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            type="primary",
             use_container_width=True,
             icon=":material/download:",
         )
@@ -3641,13 +3721,9 @@ def main():
             "competenza: pronto per l'invio diretto nel rispetto della "
             "privacy (GDPR)."
         )
-        zip_xlsx = genera_zip_excel_cooperative(
-            df_assegnazioni, df_riepilogo, df_criticita,
-            n_settimane, perc_decurtazione, costo_orario, aliquota_iva,
-        )
         st.download_button(
             "Scarica file separati (.zip)",
-            data=zip_xlsx,
+            data=cache_rep["zip_xlsx"],
             file_name="assegnazioni_per_cooperativa.zip",
             mime="application/zip",
             use_container_width=True,
@@ -3660,55 +3736,27 @@ def main():
             "alunni assegnati e il computo economico, da protocollare "
             "e trasmettere."
         )
-        zip_pdf = genera_zip_pdf_cooperative(
-            df_assegnazioni, n_settimane, perc_decurtazione, costo_orario, aliquota_iva,
-        )
         st.download_button(
             "Scarica lettere (.zip PDF)",
-            data=zip_pdf,
+            data=cache_rep["zip_pdf"],
             file_name="lettere_assegnazione.zip",
             mime="application/zip",
             use_container_width=True,
             icon=":material/picture_as_pdf:",
         )
 
-    cronologia = stats.get("cronologia")
-    if cronologia and cronologia.get("passi"):
-        meta_mesis = res.get("meta_mesis", {})
-        parametri = dict(res.get("parametri", {}))
-        parametri.setdefault("soglia", 45)
-        parametri["corso_anno"] = res.get("corso_anno", parametri.get("corso_anno", False))
+    if has_cron:
         n_passi = len(cronologia["passi"])
         n_mov = len(cronologia.get("movimenti", []))
-
         st.markdown("##### Trasparenza e accesso agli atti")
         st.caption(
             "Documentazione dell'intero procedimento, per ricostruire il "
             f"«prima e dopo» delle assegnazioni: {n_passi} fasi registrate, "
             f"{n_mov} spostamenti tracciati. Utile in caso di accesso agli atti "
             "(L. 241/1990) e a evidenza della logica del trattamento "
-            "automatizzato (art. 22 Reg. UE 2016/679)."
+            "automatizzato (art. 22 Reg. UE 2016/679). Sono inclusi anche "
+            "nello ZIP «Scarica tutto»."
         )
-
-        # genera i documenti una sola volta per stato della cronologia: la
-        # firma cambia solo su nuova esecuzione o rettifica manuale, così i
-        # rerun non li rigenerano inutilmente
-        firma_cron = (
-            n_passi, n_mov,
-            sum(len(p.get("stato", {})) for p in cronologia["passi"]),
-            tuple(sorted(parametri.items(), key=lambda kv: kv[0])),
-        )
-        cache = st.session_state.get("_cron_docs_cache")
-        if not cache or cache.get("firma") != firma_cron:
-            cache = {
-                "firma": firma_cron,
-                "xlsx": genera_excel_cronologia(
-                    cronologia, log_lines, meta_mesis, parametri),
-                "pdf": genera_pdf_verbale(
-                    cronologia, stats, log_lines, meta_mesis, parametri),
-            }
-            st.session_state["_cron_docs_cache"] = cache
-
         t1, t2 = st.columns(2)
         with t1, st.container(border=True):
             st.markdown("**Cronologia del procedimento**")
@@ -3719,7 +3767,7 @@ def main():
             )
             st.download_button(
                 "Scarica cronologia (.xlsx)",
-                data=cache["xlsx"],
+                data=cache_rep["cron_xlsx"],
                 file_name="cronologia_procedimento_oepac.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -3735,7 +3783,7 @@ def main():
             )
             st.download_button(
                 "Scarica verbale (.pdf)",
-                data=cache["pdf"],
+                data=cache_rep["verbale_pdf"],
                 file_name="verbale_procedimento_oepac.pdf",
                 mime="application/pdf",
                 use_container_width=True,

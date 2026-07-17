@@ -90,6 +90,8 @@ Il file Excel prodotto contiene i fogli:
 4. **Criticità**: solo i record con status diverso da OK, con azione suggerita
 5. Un foglio per ogni organismo (e in download separato: un .xlsx e una lettera PDF per organismo)
 
+Con il pulsante **Scarica tutto (.zip)** si ottiene un unico file compresso con tutti i documenti ordinati in cartelle (report completo, file e lettere per organismo, cronologia e verbale): si scarica un solo file invece di molti. I documenti sono generati in memoria e messi in cache — non vengono mai scritti file temporanei sul disco — e si rigenerano automaticamente dopo una modifica manuale delle assegnazioni.
+
 ### Calcolo economico e ripartizione in due periodi
 
 Il periodo annuale della convenzione (35 settimane) è ripartito in due periodi fissi:
