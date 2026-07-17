@@ -44,12 +44,17 @@ if "%OFFLINE%"=="1" (
 
 REM 1b) tramite winget (App Installer, presente su Windows 10/11)
 where winget >nul 2>&1
-if !errorlevel! == 0 (
-    echo       Installazione di Python tramite winget...
-    winget install -e --id Python.Python.3.12 --scope user --silent --accept-source-agreements --accept-package-agreements
-    goto dopo_python_install
-)
+if not !errorlevel! == 0 goto python_org_download
+echo       Installazione di Python tramite winget...
+winget install -e --id Python.Python.3.12 --scope user --silent --accept-source-agreements --accept-package-agreements
+set "WINGET_RC=!errorlevel!"
+call :aggiorna_path
+call :trova_python
+if defined PYCMD goto python_ok
+if "!WINGET_RC!"=="0" goto dopo_python_install
+echo       Installazione tramite winget non riuscita: provo il download da python.org...
 
+:python_org_download
 REM 1c) download dell'installer ufficiale da python.org
 echo       Download di Python 3.12 da python.org...
 set "PYURL=https://www.python.org/ftp/python/3.12.10/python-3.12.10-amd64.exe"
@@ -142,13 +147,25 @@ REM  Subroutine
 REM ============================================================
 
 :trova_python
-REM Imposta PYCMD se trova un Python 3.x utilizzabile
+REM Imposta PYCMD se trova un Python utilizzabile. In modalita' offline le
+REM wheel sono compilate per Python 3.12: si accetta solo un interprete 3.12,
+REM altrimenti si procede a installare quello incluso nel pacchetto.
 set "PYCMD="
+if "%OFFLINE%"=="1" goto trova_python_312
 py -3 -c "import sys" >nul 2>&1 && set "PYCMD=py -3"
 if defined PYCMD goto :eof
 python -c "import sys" >nul 2>&1 && set "PYCMD=python"
 if defined PYCMD goto :eof
 for /d %%D in ("%LocalAppData%\Programs\Python\Python3*") do (
+    if exist "%%D\python.exe" set "PYCMD=%%D\python.exe"
+)
+goto :eof
+
+:trova_python_312
+REM Offline: le wheel sono per Python 3.12 -> serve esattamente 3.12
+py -3.12 -c "import sys" >nul 2>&1 && set "PYCMD=py -3.12"
+if defined PYCMD goto :eof
+for /d %%D in ("%LocalAppData%\Programs\Python\Python312*") do (
     if exist "%%D\python.exe" set "PYCMD=%%D\python.exe"
 )
 goto :eof

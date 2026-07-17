@@ -612,6 +612,54 @@ def test_cronologia_movimento_netto():
     check("ogni destinazione dei movimenti e' un organismo finale",
           all(m["a"] in orgs_finali for m in cron["movimenti"] if m["a"]))
 
+    # Riconciliazione con grafie diverse della stessa coop (1ª e 3ª preferenza):
+    # un rientro alla propria 1ª preferenza (grafia diversa) NON è uno
+    # spostamento; sintesi fasi, diario e registro movimenti devono coincidere.
+    rows2 = [
+        riga("X", "NUOVA ISCRIZIONE", *G, 20,
+             enti="COOP SORRISO\nCOOP AURORA\nCoop Sorriso"),
+        riga("Z1", "NUOVA ISCRIZIONE", *G, 14, enti="COOP GAMMA\nCOOP DELTA\nCoop Sorriso"),
+        riga("Z2", "NUOVA ISCRIZIONE", *G, 14, enti="COOP GAMMA\nCOOP DELTA\nCoop Sorriso"),
+        riga("Z3", "NUOVA ISCRIZIONE", *G, 14, enti="COOP GAMMA\nCOOP DELTA\nCoop Sorriso"),
+    ]
+    df2, cm2, _ = app.carica_dati(costruisci_mesis(rows2))
+    r2 = app.esegui_assegnazione(df2, cm2, 45, 50, auto_ambito=True)
+    dfa2, stats2 = r2[0], r2[4]
+    x_fin = dfa2.loc[dfa2["Codice Iscrizione"] == "X", ORG].iloc[0]
+    check("X rientra sulla propria 1ª pref (grafia diversa)",
+          app.normalizza_nome(x_fin) == app.normalizza_nome("COOP SORRISO"), x_fin)
+    dfp, dfd, dfm, _ = app.costruisci_cronologia_dfs(stats2["cronologia"])
+    esito = dfp[dfp["Fase"] == "Esito definitivo"]["Spostamenti in questa fase"].iloc[0]
+    x_spost = dfd[dfd["Codice Iscrizione"] == "X"]["N. spostamenti"].iloc[0]
+    check("X non conta come spostamento nel diario", x_spost == 0, str(x_spost))
+    check("riconciliazione fasi=diario=movimenti=stats (=3)",
+          stats2["spostamenti"] == len(dfm) == esito == int(dfd["N. spostamenti"].sum()) == 3,
+          f"stats={stats2['spostamenti']} mov={len(dfm)} fase={esito} "
+          f"diario={int(dfd['N. spostamenti'].sum())}")
+
+
+def test_nat_riparametrazione():
+    print("\n=== Robustezza date: pd.NaT non fa crashare il motore ===")
+    import pandas as pd
+    check("parse_data_nascita(NaT) -> None", app.parse_data_nascita(pd.NaT) is None)
+    check("settimane_effettive(NaT) -> piene (14,21)",
+          app.settimane_effettive(pd.NaT, 2025) == (14, 21))
+    check("settimane_effettive(None) -> piene", app.settimane_effettive(None, 2025) == (14, 21))
+    # colonna Data Attivazione come datetime con celle vuote (NaT) non deve
+    # sollevare eccezioni in esegui_assegnazione
+    G = ("MUNICIPIO ROMA V", "RMIC0000IC", "IC TEST", "RMEE0000IC", "PLESSO", "IC")
+    rows = [riga("70", "NUOVA ISCRIZIONE", *G, 45, enti="COOP X")]
+    df, cm, _ = app.carica_dati(costruisci_mesis(rows))
+    c = cm.get("data_attivazione")
+    if c:
+        df[c] = pd.Series([pd.NaT] * len(df), dtype="datetime64[ns]")
+    try:
+        r = app.esegui_assegnazione(df, cm, 45, 50, auto_ambito=True, anno_start=2025)
+        ok = "Settimane totali" in r[0].columns and (r[0]["Settimane totali"] == 35).all()
+        check("Data Attivazione = NaT: nessun crash, settimane piene", ok)
+    except Exception as e:
+        check("Data Attivazione = NaT: nessun crash", False, f"{type(e).__name__}: {e}")
+
 
 def test_attribuzione_report():
     print("\n=== Attribuzione dei fogli per-organismo nel report ===")
@@ -807,6 +855,7 @@ if __name__ == "__main__":
     test_corso_anno_sintetico()
     test_cronologia()
     test_cronologia_movimento_netto()
+    test_nat_riparametrazione()
     test_attribuzione_report()
     test_settimane_periodi()
     test_logo()

@@ -36,17 +36,25 @@ def logo_path() -> str | None:
     return LOGO_PATH if os.path.exists(LOGO_PATH) else None
 
 
+_LOGO_URI_CACHE: dict = {}
+
+
 def logo_data_uri() -> str | None:
-    """Logo come data URI base64 (per l'HTML dell'intestazione)."""
+    """Logo come data URI base64 (per l'HTML dell'intestazione).
+
+    Il risultato è messo in cache: Streamlit riesegue lo script ad ogni
+    interazione e ricodificare il PNG (~0,5 MB) ogni volta sarebbe inutile."""
     p = logo_path()
     if not p:
         return None
-    try:
-        with open(p, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("ascii")
-        return f"data:image/png;base64,{b64}"
-    except OSError:
-        return None
+    if "uri" not in _LOGO_URI_CACHE:
+        try:
+            with open(p, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            _LOGO_URI_CACHE["uri"] = f"data:image/png;base64,{b64}"
+        except OSError:
+            return None
+    return _LOGO_URI_CACHE["uri"]
 
 
 _PDF_LOGO_CACHE: dict = {}
@@ -63,18 +71,20 @@ def _pdf_logo(altezza_mm: float = 20):
     try:
         from reportlab.lib.units import mm
         from reportlab.platypus import Image as RLImage
-        if "png" not in _PDF_LOGO_CACHE:
+        if "img" not in _PDF_LOGO_CACHE:
             from PIL import Image as PILImage
             im = PILImage.open(p).convert("RGBA")
             im.thumbnail((256, 256), PILImage.LANCZOS)
             b = io.BytesIO()
             im.save(b, format="PNG")
-            _PDF_LOGO_CACHE["png"] = b.getvalue()
-            _PDF_LOGO_CACHE["size"] = im.size
-        iw, ih = _PDF_LOGO_CACHE["size"]
+            # scrittura atomica: la chiave-guardia "img" contiene sia i byte
+            # sia le dimensioni, così un lettore non vede mai uno stato parziale
+            _PDF_LOGO_CACHE["img"] = {"png": b.getvalue(), "size": im.size}
+        cached = _PDF_LOGO_CACHE["img"]
+        iw, ih = cached["size"]
         h = altezza_mm * mm
         w = h * (iw / ih) if ih else h
-        return RLImage(io.BytesIO(_PDF_LOGO_CACHE["png"]), width=w, height=h)
+        return RLImage(io.BytesIO(cached["png"]), width=w, height=h)
     except Exception:
         return None
 
@@ -95,12 +105,14 @@ def nomi_uguali(a: str, b: str) -> bool:
 
 
 def parse_data_nascita(val) -> datetime.date | None:
+    # pd.NaT è istanza di datetime.datetime: va intercettato PRIMA degli
+    # isinstance sottostanti, altrimenti verrebbe restituito NaT (non None).
+    if val is None or (not isinstance(val, str) and pd.isna(val)):
+        return None
     if isinstance(val, datetime.datetime):
         return val.date()
     if isinstance(val, datetime.date):
         return val
-    if pd.isna(val):
-        return None
     s = str(val).strip().split(" ")[0]
     for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d.%m.%Y"):
         try:
@@ -1382,7 +1394,10 @@ def settimane_effettive(data_attivazione, anno_start):
     - attivazione in corso d'anno (finestre 2/3/4) -> settimane residue,
       ridotte proporzionalmente ai giorni rimanenti di ciascun periodo.
     """
-    if not isinstance(data_attivazione, datetime.date) or anno_start is None:
+    # anno mancante, data non valida o pd.NaT (che è istanza di datetime):
+    # nessuna riparametrazione, settimane piene.
+    if (anno_start is None or not isinstance(data_attivazione, datetime.date)
+            or pd.isna(data_attivazione)):
         return SETTIMANE_SET_DIC, SETTIMANE_GEN_GIU
     d = data_attivazione
     p1_ini, p1_fin = datetime.date(anno_start, 9, 16), datetime.date(anno_start, 12, 31)
@@ -2077,9 +2092,13 @@ def costruisci_cronologia_dfs(cronologia: dict):
             n_spost = ""
         else:
             prev = passi[k - 1]["stato"]
+            # confronto normalizzato (come il registro movimenti): un rientro
+            # a una grafia diversa dello stesso organismo non è uno spostamento,
+            # così la somma coincide con il registro movimenti.
             n_spost = sum(
                 1 for i in stato
-                if prev.get(i, "") and stato.get(i, "") != prev.get(i, "")
+                if prev.get(i, "")
+                and normalizza_nome(stato.get(i, "")) != normalizza_nome(prev.get(i, ""))
             )
         righe_passi.append({
             "N.": p["indice"],
@@ -2113,8 +2132,10 @@ def costruisci_cronologia_dfs(cronologia: dict):
             val = p["stato"].get(idx, "")
             riga[header] = val if val else PLACEHOLDER_NON_ASSEGNATO
             # conta gli spostamenti veri e propri (riassegnazioni o passaggio
-            # a "da assegnare"), non la prima assegnazione da vuoto
-            if prev_val not in (None, "") and val != prev_val:
+            # a "da assegnare"), non la prima assegnazione da vuoto; confronto
+            # normalizzato per riconciliare con il registro movimenti
+            if (prev_val not in (None, "")
+                    and normalizza_nome(val) != normalizza_nome(prev_val)):
                 n_var += 1
             prev_val = val
         riga["N. spostamenti"] = n_var
@@ -2346,7 +2367,8 @@ def genera_excel_cronologia(
                 continue
             val = ws_d.cell(row=ri, column=ci).value
             prev = ws_d.cell(row=ri, column=col_passi_idx[pos - 1]).value
-            if prev and prev != PLACEHOLDER_NON_ASSEGNATO and val != prev:
+            if (prev and prev != PLACEHOLDER_NON_ASSEGNATO
+                    and normalizza_nome(str(val)) != normalizza_nome(str(prev))):
                 ws_d.cell(row=ri, column=ci).fill = CHANGE_FILL
 
     # --- Movimenti ---
