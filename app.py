@@ -523,6 +523,7 @@ def esegui_assegnazione(
     codici_comunali: set[str] | None = None,
     corso_anno: bool = False,
     data_riferimento: datetime.date | None = None,
+    anno_start: int | None = None,
 ):
 
     log = []
@@ -562,7 +563,8 @@ def esegui_assegnazione(
         "Tipo Gestione", "Fonte Classificazione", "Municipio", "Gruppo 45h",
         "Ore Richieste", "Ore Assegnate", "Organismo Pre-esistente",
         "Organismo Assegnato dall'Algoritmo", "Preferenza Soddisfatta",
-        "Data Attivazione", "Status", "Note",
+        "Data Attivazione", "Settimane set-dic", "Settimane gen-giu",
+        "Settimane totali", "Status", "Note",
     ]
     if len(df_work) == 0:
         df_empty = pd.DataFrame(columns=empty_result_cols)
@@ -1040,6 +1042,11 @@ def esegui_assegnazione(
 
         dn_str = dn.strftime("%d/%m/%Y") if dn else ""
 
+        data_att_val = df_work.at[idx, data_att_col] if data_att_col else ""
+        n1_sett, n2_sett = settimane_effettive(
+            parse_data_nascita(data_att_val), anno_start
+        )
+
         result_rows.append({
             "Codice Iscrizione": df_work.at[idx, "_codice"],
             "Tipo": df_work.at[idx, tipo_col] if tipo_col else "",
@@ -1067,7 +1074,10 @@ def esegui_assegnazione(
             "Organismo Pre-esistente": df_work.at[idx, "_org_orig"] if isinstance(df_work.at[idx, "_org_orig"], str) else "",
             "Organismo Assegnato dall'Algoritmo": df_work.at[idx, "_assegnato"],
             "Preferenza Soddisfatta": df_work.at[idx, "_pref_soddisfatta"],
-            "Data Attivazione": df_work.at[idx, data_att_col] if data_att_col else "",
+            "Data Attivazione": data_att_val,
+            "Settimane set-dic": n1_sett,
+            "Settimane gen-giu": n2_sett,
+            "Settimane totali": n1_sett + n2_sett,
             "Status": df_work.at[idx, "_status"],
             "Note": df_work.at[idx, "_note"],
         })
@@ -1293,38 +1303,152 @@ def arricchisci_indirizzi(df_result: pd.DataFrame, file_bytes: bytes, filename: 
 
 # ---------------------------------------------------------------------------
 # Economic calculations (shared by Excel, PDF, dashboard)
+#
+# Il periodo annuale (di norma 35 settimane) è ripartito in due periodi:
+#   - set-dic: 14 settimane (da settembre a dicembre)
+#   - gen-giu: 21 settimane (da gennaio a giugno)
+# Gli importi annuali coincidono con la somma dei due periodi.
 # ---------------------------------------------------------------------------
 
+SETTIMANE_SET_DIC = 14
+SETTIMANE_GEN_GIU = 21
+SETTIMANE_ANNO = SETTIMANE_SET_DIC + SETTIMANE_GEN_GIU  # 35
+
+
+def settimane_effettive(data_attivazione, anno_start):
+    """Settimane effettive nei due periodi (set-dic max 14, gen-giu max 21)
+    per un alunno attivato in `data_attivazione`, riferito all'anno scolastico
+    che inizia a settembre di `anno_start`.
+
+    - attivazione all'inizio dell'anno o precedente (riconferme, 1ª finestra)
+      -> (14, 21) pieni;
+    - attivazione in corso d'anno (finestre 2/3/4) -> settimane residue,
+      ridotte proporzionalmente ai giorni rimanenti di ciascun periodo.
+    """
+    if not isinstance(data_attivazione, datetime.date) or anno_start is None:
+        return SETTIMANE_SET_DIC, SETTIMANE_GEN_GIU
+    d = data_attivazione
+    p1_ini, p1_fin = datetime.date(anno_start, 9, 16), datetime.date(anno_start, 12, 31)
+    p2_ini, p2_fin = datetime.date(anno_start + 1, 1, 7), datetime.date(anno_start + 1, 6, 8)
+
+    def resta(ini, fin, sett):
+        if d <= ini:
+            return sett
+        if d >= fin:
+            return 0
+        return int(round(sett * (fin - d).days / (fin - ini).days))
+
+    return resta(p1_ini, p1_fin, SETTIMANE_SET_DIC), resta(p2_ini, p2_fin, SETTIMANE_GEN_GIU)
+
+
+def deriva_anno_start(meta_mesis: dict | None = None,
+                      data_riferimento: datetime.date | None = None) -> int | None:
+    """Ricava l'anno d'inizio dell'anno scolastico (es. 2024 per 2024/2025).
+
+    Usa prima l'anno scolastico dei metadati MESIS (es. "2024/2025"),
+    poi la data di riferimento (mese >= 9 -> stesso anno, altrimenti
+    anno precedente). Restituisce None se non ricavabile."""
+    if meta_mesis:
+        anno_txt = str(meta_mesis.get("anno", ""))
+        m = re.search(r"(19|20)\d{2}", anno_txt)
+        if m:
+            return int(m.group(0))
+    if isinstance(data_riferimento, datetime.date):
+        return data_riferimento.year if data_riferimento.month >= 9 else data_riferimento.year - 1
+    return None
+
+
+def _col_periodo(aliquota_iva: float) -> dict:
+    """Nomi delle colonne economiche dei due periodi (Imponibile, IVA, Totale)."""
+    iva = f"{aliquota_iva:.0f}"
+    return {
+        "set-dic": (
+            "Imponibile set-dic (EUR)",
+            f"IVA {iva}% set-dic (EUR)",
+            "Totale set-dic (EUR)",
+        ),
+        "gen-giu": (
+            "Imponibile gen-giu (EUR)",
+            f"IVA {iva}% gen-giu (EUR)",
+            "Totale gen-giu (EUR)",
+        ),
+    }
+
+
 def calcola_colonne_economiche(
-    df, n_settimane=35, perc_decurtazione=11.0, costo_orario=24.07, aliquota_iva=5.0
+    df, n_settimane=SETTIMANE_ANNO, perc_decurtazione=11.0, costo_orario=24.07,
+    aliquota_iva=5.0,
 ):
-    """Aggiunge le colonne economiche derivate al DataFrame delle assegnazioni."""
+    """Aggiunge le colonne economiche derivate al DataFrame delle assegnazioni.
+
+    Oltre alle colonne annuali, aggiunge gli importi dei due periodi
+    (set-dic = 14 settimane, gen-giu = 21 settimane). L'annuale è la somma
+    dei due periodi (coerenza al centesimo).
+
+    Le settimane per riga sono lette dalle colonne "Settimane set-dic" /
+    "Settimane gen-giu" quando presenti (riparametrazione degli alunni
+    attivati in corso d'anno); in mancanza si ripartisce `n_settimane`
+    sul rapporto 14/21."""
     coeff_netto = 1 - perc_decurtazione / 100
     coeff_iva = aliquota_iva / 100
     ore_sett = pd.to_numeric(df["Ore Assegnate"], errors="coerce").fillna(0)
-    ore_annuali = ore_sett * n_settimane
-    decurtazione = ore_annuali * (perc_decurtazione / 100)
-    ore_nette = ore_annuali * coeff_netto
-    imponibile = ore_nette * costo_orario
-    iva = imponibile * coeff_iva
-    totale = imponibile + iva
     out = df.copy()
-    out["Ore annuali lorde"] = ore_annuali
-    out[f"Decurtazione {perc_decurtazione:.0f}%"] = decurtazione
-    out["Ore annuali nette"] = ore_nette
-    out["Imponibile (EUR)"] = imponibile.round(2)
-    out[f"IVA {aliquota_iva:.0f}% (EUR)"] = iva.round(2)
-    out["Totale (EUR)"] = totale.round(2)
+    cp = _col_periodo(aliquota_iva)
+
+    def _periodo(settimane):
+        ore_nette = ore_sett * settimane * coeff_netto
+        imp = (ore_nette * costo_orario).round(2)
+        iva = (imp * coeff_iva).round(2)
+        return ore_nette, imp, iva, (imp + iva).round(2)
+
+    if "Settimane set-dic" in df.columns and "Settimane gen-giu" in df.columns:
+        n1 = pd.to_numeric(df["Settimane set-dic"], errors="coerce").fillna(0)
+        n2 = pd.to_numeric(df["Settimane gen-giu"], errors="coerce").fillna(0)
+    else:
+        n1_val = (
+            SETTIMANE_SET_DIC if n_settimane == SETTIMANE_ANNO
+            else round(n_settimane * SETTIMANE_SET_DIC / SETTIMANE_ANNO)
+        )
+        n1 = pd.Series(n1_val, index=df.index)
+        n2 = pd.Series(n_settimane - n1_val, index=df.index)
+
+    p1_nette, p1_imp, p1_iva, p1_tot = _periodo(n1)
+    p2_nette, p2_imp, p2_iva, p2_tot = _periodo(n2)
+
+    out["Settimane set-dic"] = n1
+    out["Settimane gen-giu"] = n2
+    out["Settimane totali"] = n1 + n2
+
+    # annuale = somma dei due periodi
+    ore_lorde = ore_sett * (n1 + n2)
+    out["Ore annuali lorde"] = ore_lorde
+    out["Ore annuali nette"] = p1_nette + p2_nette
+    out[f"Decurtazione {perc_decurtazione:.0f}%"] = ore_lorde - (p1_nette + p2_nette)
+    out["Imponibile (EUR)"] = (p1_imp + p2_imp).round(2)
+    out[f"IVA {aliquota_iva:.0f}% (EUR)"] = (p1_iva + p2_iva).round(2)
+    out["Totale (EUR)"] = (p1_tot + p2_tot).round(2)
+
+    # periodo set-dic (14 sett.)
+    c1_imp, c1_iva, c1_tot = cp["set-dic"]
+    out[c1_imp], out[c1_iva], out[c1_tot] = p1_imp, p1_iva, p1_tot
+    # periodo gen-giu (21 sett.)
+    c2_imp, c2_iva, c2_tot = cp["gen-giu"]
+    out[c2_imp], out[c2_iva], out[c2_tot] = p2_imp, p2_iva, p2_tot
     return out
 
 
 def calcola_riepilogo_economico(
-    df_eco, n_settimane=35, perc_decurtazione=11.0, costo_orario=24.07, aliquota_iva=5.0
+    df_eco, n_settimane=SETTIMANE_ANNO, perc_decurtazione=11.0, costo_orario=24.07,
+    aliquota_iva=5.0,
 ):
-    """Costruisce il riepilogo economico aggregato per organismo."""
+    """Costruisce il riepilogo economico aggregato per organismo, con la
+    ripartizione nei due periodi set-dic / gen-giu."""
     ORG = "Organismo Assegnato dall'Algoritmo"
     organismi = sorted([o for o in df_eco[ORG].unique() if o])
     iva_col = f"IVA {aliquota_iva:.0f}% (EUR)"
+    cp = _col_periodo(aliquota_iva)
+    c1_imp, c1_iva, c1_tot = cp["set-dic"]
+    c2_imp, c2_iva, c2_tot = cp["gen-giu"]
     rows = []
     for org in organismi:
         df_o = df_eco.loc[df_eco[ORG] == org]
@@ -1334,26 +1458,36 @@ def calcola_riepilogo_economico(
             "Organismo": org,
             "N. alunni": len(df_o),
             "Ore sett. totali": df_o["Ore Assegnate"].sum(),
-            f"Ore annuali lorde ({n_settimane} sett.)": ore_lorde,
+            "Ore annuali lorde": ore_lorde,
             f"Decurtazione {perc_decurtazione:.0f}%": ore_lorde - ore_nette,
             "Ore annuali nette": ore_nette,
             "Costo orario": costo_orario,
-            "Imponibile (EUR)": round(df_o["Imponibile (EUR)"].sum(), 2),
+            f"Imponibile set-dic ({SETTIMANE_SET_DIC} sett.) (EUR)": round(df_o[c1_imp].sum(), 2),
+            f"Totale set-dic (EUR)": round(df_o[c1_tot].sum(), 2),
+            f"Imponibile gen-giu ({SETTIMANE_GEN_GIU} sett.) (EUR)": round(df_o[c2_imp].sum(), 2),
+            f"Totale gen-giu (EUR)": round(df_o[c2_tot].sum(), 2),
+            "Imponibile annuo (EUR)": round(df_o["Imponibile (EUR)"].sum(), 2),
             iva_col: round(df_o[iva_col].sum(), 2),
-            "Totale (EUR)": round(df_o["Totale (EUR)"].sum(), 2),
+            "Totale annuo (EUR)": round(df_o["Totale (EUR)"].sum(), 2),
         })
     return pd.DataFrame(rows)
 
 
 def colonne_coop(perc_decurtazione=11.0, aliquota_iva=5.0):
     """Colonne da mostrare nei fogli/lettere per cooperativa."""
+    cp = _col_periodo(aliquota_iva)
+    c1_imp, c1_iva, c1_tot = cp["set-dic"]
+    c2_imp, c2_iva, c2_tot = cp["gen-giu"]
     return [
         "Codice Iscrizione", "Tipo", "Cognome", "Nome", "Data Nascita", "Età",
         "Codice Meccanografico Istituto", "Istituto",
         "Codice Meccanografico Plesso", "Plesso", "Grado Scolastico",
         "Classe", "Sezione", "Ambito", "Tipo Gestione", "Municipio", "Gruppo 45h",
-        "Ore Assegnate", "Ore annuali lorde",
+        "Ore Assegnate", "Settimane set-dic", "Settimane gen-giu",
+        "Settimane totali", "Ore annuali lorde",
         f"Decurtazione {perc_decurtazione:.0f}%", "Ore annuali nette",
+        c1_imp, c1_iva, c1_tot,
+        c2_imp, c2_iva, c2_tot,
         "Imponibile (EUR)", f"IVA {aliquota_iva:.0f}% (EUR)", "Totale (EUR)",
         "Preferenza Soddisfatta", "Status",
     ]
@@ -1543,6 +1677,14 @@ def genera_excel(
         ore_lorde_tot = df_o["Ore annuali lorde"].sum()
         ore_nette_tot = df_o["Ore annuali nette"].sum()
 
+        cp = _col_periodo(aliquota_iva)
+        c1_imp, _c1i, c1_tot = cp["set-dic"]
+        c2_imp, _c2i, c2_tot = cp["gen-giu"]
+        imp_sd_tot = df_o[c1_imp].sum() if c1_imp in df_o.columns else 0.0
+        tot_sd_tot = df_o[c1_tot].sum() if c1_tot in df_o.columns else 0.0
+        imp_gg_tot = df_o[c2_imp].sum() if c2_imp in df_o.columns else 0.0
+        tot_gg_tot = df_o[c2_tot].sum() if c2_tot in df_o.columns else 0.0
+
         ws.cell(row=1, column=1).value = "ASSEGNAZIONE SERVIZIO OEPAC"
         ws.cell(row=1, column=1).font = TITLE_FONT
         ws.cell(row=2, column=1).value = org
@@ -1550,17 +1692,25 @@ def genera_excel(
         ws.cell(row=3, column=1).value = (
             f"Data: {today_str}   |   Alunni assegnati: {n_al}   |   "
             f"Ore settimanali: {ore_sett_tot:.0f}   |   "
-            f"Settimane: {n_settimane}   |   "
+            f"Settimane: {n_settimane} ({SETTIMANE_SET_DIC} set-dic + "
+            f"{SETTIMANE_GEN_GIU} gen-giu)   |   "
             f"Ore annuali nette (decurt. {perc_decurtazione:.0f}%): {ore_nette_tot:,.0f}"
         )
         ws.cell(row=3, column=1).font = PARAM_FONT
         ws.cell(row=4, column=1).value = (
-            f"Costo orario: EUR {costo_orario:.2f}   |   "
+            f"set-dic ({SETTIMANE_SET_DIC} sett.): imponibile EUR {imp_sd_tot:,.2f}, "
+            f"totale EUR {tot_sd_tot:,.2f}   |   "
+            f"gen-giu ({SETTIMANE_GEN_GIU} sett.): imponibile EUR {imp_gg_tot:,.2f}, "
+            f"totale EUR {tot_gg_tot:,.2f}"
+        )
+        ws.cell(row=4, column=1).font = PARAM_FONT
+        ws.cell(row=5, column=1).value = (
+            f"ANNUO   |   Costo orario: EUR {costo_orario:.2f}   |   "
             f"Imponibile: EUR {imponibile_tot:,.2f}   |   "
             f"IVA {aliquota_iva:.0f}%: EUR {iva_tot:,.2f}   |   "
             f"TOTALE: EUR {totale_tot:,.2f}"
         )
-        ws.cell(row=4, column=1).font = SUBTITLE_FONT
+        ws.cell(row=5, column=1).font = SUBTITLE_FONT
 
         n_data_cols = len(coop_cols_available)
         _fmt_sheet(ws, n_data_cols, None, None, start_row=6)
@@ -1649,11 +1799,18 @@ def genera_pdf_coop(
                            textColor=colors.HexColor("#666666"))
 
     iva_col = f"IVA {aliquota_iva:.0f}% (EUR)"
+    cp = _col_periodo(aliquota_iva)
+    c1_imp, _c1_iva, c1_tot = cp["set-dic"]
+    c2_imp, _c2_iva, c2_tot = cp["gen-giu"]
     ore_sett = df_eco_org["Ore Assegnate"].sum()
     ore_nette = df_eco_org["Ore annuali nette"].sum()
     imponibile = df_eco_org["Imponibile (EUR)"].sum()
     iva = df_eco_org[iva_col].sum()
     totale = df_eco_org["Totale (EUR)"].sum()
+    imp_sd = df_eco_org[c1_imp].sum() if c1_imp in df_eco_org.columns else 0.0
+    tot_sd = df_eco_org[c1_tot].sum() if c1_tot in df_eco_org.columns else 0.0
+    imp_gg = df_eco_org[c2_imp].sum() if c2_imp in df_eco_org.columns else 0.0
+    tot_gg = df_eco_org[c2_tot].sum() if c2_tot in df_eco_org.columns else 0.0
     n_al = len(df_eco_org)
     today_str = datetime.date.today().strftime("%d/%m/%Y")
 
@@ -1669,32 +1826,33 @@ def genera_pdf_coop(
     elems.append(Paragraph(
         f"Si comunica l'assegnazione del servizio OEPAC per <b>{n_al} alunni/e</b>, "
         f"per un totale di <b>{ore_sett:.0f} ore settimanali</b>. "
-        f"Il computo economico, calcolato su <b>{n_settimane} settimane</b> con "
+        f"Il computo economico, calcolato su <b>{n_settimane} settimane</b> "
+        f"ripartite in <b>{SETTIMANE_SET_DIC} (set-dic)</b> + "
+        f"<b>{SETTIMANE_GEN_GIU} (gen-giu)</b>, con "
         f"decurtazione del <b>{perc_decurtazione:.0f}%</b> e costo orario di "
-        f"<b>EUR {costo_orario:.2f}</b>, e riportato di seguito.", normal,
+        f"<b>EUR {costo_orario:.2f}</b>, e riportato di seguito. Gli alunni "
+        f"attivati in corso d'anno sono riparametrati sulle settimane residue.",
+        normal,
     ))
     elems.append(Spacer(1, 8))
 
     riepilogo_data = [
-        ["Ore sett.", "Ore annue nette", "Imponibile", f"IVA {aliquota_iva:.0f}%", "TOTALE"],
-        [
-            f"{ore_sett:.0f}",
-            f"{ore_nette:,.0f}",
-            f"EUR {imponibile:,.2f}",
-            f"EUR {iva:,.2f}",
-            f"EUR {totale:,.2f}",
-        ],
+        ["Periodo", "Imponibile", f"IVA {aliquota_iva:.0f}%", "TOTALE"],
+        [f"set-dic ({SETTIMANE_SET_DIC} sett.)", f"EUR {imp_sd:,.2f}", "", f"EUR {tot_sd:,.2f}"],
+        [f"gen-giu ({SETTIMANE_GEN_GIU} sett.)", f"EUR {imp_gg:,.2f}", "", f"EUR {tot_gg:,.2f}"],
+        ["ANNUO", f"EUR {imponibile:,.2f}", f"EUR {iva:,.2f}", f"EUR {totale:,.2f}"],
     ]
     rt = Table(riepilogo_data, hAlign="LEFT")
     rt.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), BRAND),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTNAME", (0, 1), (-1, 1), "Helvetica-Bold"),
-        ("BACKGROUND", (0, 1), (-1, 1), BRAND_LIGHT),
+        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("BACKGROUND", (0, -1), (-1, -1), BRAND_LIGHT),
+        ("ALIGN", (0, 1), (0, -1), "LEFT"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#B4C6E7")),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("ALIGN", (1, 0), (-1, -1), "CENTER"),
         ("TOPPADDING", (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
     ]))
@@ -1704,12 +1862,17 @@ def genera_pdf_coop(
 
     cols = [
         "Cognome", "Nome", "Grado Scolastico", "Plesso", "Classe", "Sezione",
-        "Ore Assegnate", "Ore annuali nette", "Imponibile (EUR)", "Totale (EUR)",
+        "Ore Assegnate", c1_tot, c2_tot, "Totale (EUR)",
     ]
     cols = [c for c in cols if c in df_eco_org.columns]
-    header = [c.replace(" (EUR)", "").replace("Grado Scolastico", "Grado")
-              .replace("Ore Assegnate", "Ore/sett").replace("Ore annuali nette", "Ore/anno")
-              for c in cols]
+    header_map = {
+        "Grado Scolastico": "Grado",
+        "Ore Assegnate": "Ore/sett",
+        c1_tot: f"Tot. set-dic ({SETTIMANE_SET_DIC} s.)",
+        c2_tot: f"Tot. gen-giu ({SETTIMANE_GEN_GIU} s.)",
+        "Totale (EUR)": "Totale annuo",
+    }
+    header = [header_map.get(c, c.replace(" (EUR)", "")) for c in cols]
 
     df_sorted = df_eco_org.sort_values(
         [c for c in ["Plesso", "Cognome", "Nome"] if c in df_eco_org.columns]
@@ -1721,8 +1884,6 @@ def genera_pdf_coop(
             v = r[c]
             if "EUR" in c:
                 row.append(f"{v:,.2f}")
-            elif c in ("Ore annuali nette",):
-                row.append(f"{v:,.0f}")
             else:
                 row.append(str(v) if pd.notna(v) else "")
         data.append(row)
@@ -1731,10 +1892,10 @@ def genera_pdf_coop(
     for i, c in enumerate(cols):
         if c == "Ore Assegnate":
             tot_row[i] = f"{ore_sett:.0f}"
-        elif c == "Ore annuali nette":
-            tot_row[i] = f"{ore_nette:,.0f}"
-        elif c == "Imponibile (EUR)":
-            tot_row[i] = f"{imponibile:,.2f}"
+        elif c == c1_tot:
+            tot_row[i] = f"{tot_sd:,.2f}"
+        elif c == c2_tot:
+            tot_row[i] = f"{tot_gg:,.2f}"
         elif c == "Totale (EUR)":
             tot_row[i] = f"{totale:,.2f}"
     data.append(tot_row)
@@ -2654,7 +2815,11 @@ def _render_benvenuto():
             "Per le finestre in corso d'anno seleziona la modalità "
             "**In corso d'anno** nelle impostazioni a sinistra: gli alunni "
             "già attivati restano sul loro organismo e vengono assegnate "
-            "solo le nuove domande."
+            "solo le nuove domande.\n\n"
+            "Gli alunni attivati in una finestra vengono **riparametrati** "
+            "sulle settimane effettive residue (delle 14 di set-dic e 21 di "
+            "gen-giu), in base alla Data Attivazione: il computo economico "
+            "riflette solo il periodo di servizio effettivamente erogato."
         )
     with c_dx, st.expander("Requisiti del file MESIS"):
         st.markdown(
@@ -2766,9 +2931,16 @@ def main():
         )
 
         with st.expander("Parametri economici"):
-            n_settimane = st.number_input(
-                "Settimane annuali", min_value=1, max_value=52, value=35,
-                help="Durata della convenzione annuale (di norma 35 settimane).",
+            n_settimane = SETTIMANE_ANNO
+            st.markdown(
+                f"**Settimane annuali: {SETTIMANE_ANNO}** "
+                f"({SETTIMANE_SET_DIC} set-dic + {SETTIMANE_GEN_GIU} gen-giu)"
+            )
+            st.caption(
+                "Durata fissa della convenzione: 14 settimane da settembre a "
+                "dicembre e 21 da gennaio a giugno. Gli alunni attivati in "
+                "corso d'anno sono riparametrati sulle settimane effettive "
+                "residue in base alla Data Attivazione."
             )
             perc_decurtazione = st.number_input(
                 "Decurtazione %", min_value=0.0, max_value=50.0, value=11.0, step=0.5,
@@ -3018,6 +3190,7 @@ def main():
             )
 
     if run_clicked:
+        anno_start = deriva_anno_start(meta_mesis, data_riferimento)
         with st.spinner("Elaborazione in corso..."):
             result = esegui_assegnazione(
                 df_raw, col_map, soglia, max_iter,
@@ -3026,6 +3199,7 @@ def main():
                 codici_comunali=codici_comunali,
                 corso_anno=corso_anno,
                 data_riferimento=data_riferimento,
+                anno_start=anno_start,
             )
             df_assegnazioni, df_riepilogo, df_criticita, log_lines, stats, nome_registro = result
             if anagrafe_file:

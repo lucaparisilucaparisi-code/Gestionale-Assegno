@@ -677,6 +677,84 @@ def test_attribuzione_report():
           str(fogli_org))
 
 
+def test_settimane_periodi():
+    print("\n=== Periodi 14/21 e riparametrazione per finestra ===")
+
+    # settimane_effettive: pieni per riconferme/inizio anno, ridotti in corso
+    anno = 2025
+    for nome, d, exp in [
+        ("nessuna data -> pieni", None, (14, 21)),
+        ("pre-anno (riconferma) -> pieni", datetime.date(2025, 6, 1), (14, 21)),
+        ("inizio anno 16/09 -> pieni", datetime.date(2025, 9, 16), (14, 21)),
+        ("dopo giugno -> zero", datetime.date(2026, 6, 30), (0, 0)),
+    ]:
+        got = app.settimane_effettive(d, anno)
+        check(f"settimane_effettive: {nome}", got == exp, f"ottenuto {got}")
+
+    # finestra 2 (novembre): set-dic ridotto, gen-giu pieno
+    n1, n2 = app.settimane_effettive(datetime.date(2025, 11, 1), anno)
+    check("finestra novembre: set-dic ridotto e gen-giu pieno",
+          0 < n1 < app.SETTIMANE_SET_DIC and n2 == app.SETTIMANE_GEN_GIU,
+          f"({n1}, {n2})")
+    # finestra 3 (gennaio inoltrato): set-dic azzerato
+    n1b, n2b = app.settimane_effettive(datetime.date(2026, 1, 20), anno)
+    check("finestra gennaio: set-dic azzerato, gen-giu ridotto",
+          n1b == 0 and 0 < n2b < app.SETTIMANE_GEN_GIU, f"({n1b}, {n2b})")
+
+    # deriva_anno_start
+    check("anno_start da '2025/2026'", app.deriva_anno_start({"anno": "2025/2026"}) == 2025)
+    check("anno_start da data riferimento nov.",
+          app.deriva_anno_start({}, datetime.date(2025, 11, 1)) == 2025)
+    check("anno_start assente -> None", app.deriva_anno_start({}, None) is None)
+
+    # riconciliazione economica: annuo == set-dic + gen-giu (al centesimo)
+    df = pd.DataFrame({
+        "Ore Assegnate": [10, 10, 20],
+        "Settimane set-dic": [14, 8, 14],
+        "Settimane gen-giu": [21, 21, 21],
+        "Organismo Assegnato dall'Algoritmo": ["A", "A", "B"],
+    })
+    eco = app.calcola_colonne_economiche(df)
+    imp_diff = (eco["Imponibile (EUR)"]
+                - (eco["Imponibile set-dic (EUR)"] + eco["Imponibile gen-giu (EUR)"])).abs()
+    tot_diff = (eco["Totale (EUR)"]
+                - (eco["Totale set-dic (EUR)"] + eco["Totale gen-giu (EUR)"])).abs()
+    check("imponibile annuo == set-dic + gen-giu", (imp_diff < 0.005).all())
+    check("totale annuo == set-dic + gen-giu", (tot_diff < 0.005).all())
+    check("settimane totali = set-dic + gen-giu",
+          (eco["Settimane totali"] == eco["Settimane set-dic"] + eco["Settimane gen-giu"]).all())
+    # riga riparametrata (29 sett.) costa meno della piena (35 sett.), stesse ore
+    check("riparametrato (29 sett.) < pieno (35 sett.)",
+          eco["Totale (EUR)"].iloc[1] < eco["Totale (EUR)"].iloc[0])
+
+    # end-to-end: colonne settimane in esegui_assegnazione, riparametrate per finestra
+    rows = [
+        riga("51", "RICONFERMA", "MUNICIPIO ROMA V", "RMIC000051", "IC EPSILON",
+             "RMEE000051", "PLESSO EPSILON", "IC", 45, org="COOP A",
+             att="2025-09-15 00:00:00"),
+        riga("52", "NUOVA ISCRIZIONE", "MUNICIPIO ROMA V", "RMIC000051", "IC EPSILON",
+             "RMEE000051", "PLESSO EPSILON", "IC", 20, enti="COOP A\nCOOP B",
+             att="2025-11-17 00:00:00"),
+    ]
+    df_s, cm_s, _ = app.carica_dati(costruisci_mesis(rows))
+    res_s = app.esegui_assegnazione(df_s, cm_s, 45, 50, auto_ambito=True,
+                                    anno_start=2025)
+    by = res_s[0].set_index("Codice Iscrizione")
+    check("colonne settimane presenti nel risultato",
+          {"Settimane set-dic", "Settimane gen-giu", "Settimane totali"}
+          <= set(res_s[0].columns))
+    check("51 (settembre) settimane piene = 35",
+          by.at["51", "Settimane totali"] == app.SETTIMANE_ANNO,
+          str(by.at["51", "Settimane totali"]))
+    check("52 (novembre) riparametrato < 35",
+          by.at["52", "Settimane totali"] < app.SETTIMANE_ANNO,
+          str(by.at["52", "Settimane totali"]))
+    # senza anno_start, nessuna riparametrazione: tutti a 35
+    res_no = app.esegui_assegnazione(df_s, cm_s, 45, 50, auto_ambito=True)
+    check("senza anno_start: nessuna riparametrazione (tutti 35)",
+          (res_no[0]["Settimane totali"] == app.SETTIMANE_ANNO).all())
+
+
 def test_etichetta_gruppo():
     print("\n=== Unit: etichetta_gruppo ===")
     for cod, desc, atteso in [
@@ -707,6 +785,7 @@ if __name__ == "__main__":
     test_cronologia()
     test_cronologia_movimento_netto()
     test_attribuzione_report()
+    test_settimane_periodi()
 
     print()
     if FALLITI:

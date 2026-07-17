@@ -86,9 +86,20 @@ Il file Excel prodotto contiene i fogli:
 
 1. **Assegnazioni**: una riga per alunno con tutti i dati (compresi Tipo Gestione, Municipio e Gruppo 45h) e l'esito dell'algoritmo
 2. **Riepilogo Gruppo**: tabella aggregata per gruppo 45h × Organismo con ore totali e verifica soglia
-3. **Riepilogo Economico**: importi per organismo
+3. **Riepilogo Economico**: importi per organismo, suddivisi nei due periodi (set-dic e gen-giu) e in totale annuo
 4. **Criticità**: solo i record con status diverso da OK, con azione suggerita
 5. Un foglio per ogni organismo (e in download separato: un .xlsx e una lettera PDF per organismo)
+
+### Calcolo economico e ripartizione in due periodi
+
+Il periodo annuale della convenzione (35 settimane) è ripartito in due periodi fissi:
+
+- **set-dic**: 14 settimane (da settembre a dicembre)
+- **gen-giu**: 21 settimane (da gennaio a giugno)
+
+Ogni report (foglio Assegnazioni, riepilogo economico, fogli e lettere per organismo) riporta gli importi dei due periodi **e** dell'intero anno, sia per singolo alunno sia in aggregato per cooperativa; l'importo annuo coincide sempre con la somma dei due periodi (arrotondati al centesimo, come per una fatturazione separata per periodo).
+
+Gli alunni **attivati in corso d'anno** (in una delle finestre di attivazione) vengono **riparametrati** sulle settimane effettivamente residue: la Data Attivazione del MESIS, confrontata con l'anno scolastico, determina quante delle 14 settimane di set-dic e delle 21 di gen-giu restano da erogare. Le riconferme e le attivazioni di inizio anno mantengono le settimane piene (14 + 21). Le settimane effettive di ciascun periodo sono riportate in colonne dedicate nel report.
 
 ## Trasparenza e accesso agli atti
 
