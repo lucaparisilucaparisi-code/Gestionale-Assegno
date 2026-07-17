@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+offline/
+*.req_installed
+.streamlit/secrets.toml

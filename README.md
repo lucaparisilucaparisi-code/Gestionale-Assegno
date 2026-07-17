@@ -2,15 +2,32 @@
 
 Strumento per l'assegnazione degli alunni con disabilità (servizio OEPAC) agli Organismi accreditati, secondo le Linee Guida approvate con **DGC Roma Capitale n. 260/2024** (Art. 5, commi 5 e 6).
 
-## Avvio rapido (un click)
+## Installazione su Windows (un click, tutto incluso)
 
-**Windows**: doppio click su `avvia.bat`
+Sul PC Windows, doppio clic su **`Installa-OEPAC.bat`**.
 
-**Mac / Linux**: doppio click su `avvia.sh` (oppure da terminale: `./avvia.sh`)
+Con un solo clic vengono installati automaticamente **tutti** i componenti necessari:
+- **Python** (se non è già presente sul computer, viene installato da solo — tramite winget o scaricando l'installer ufficiale, senza richiedere privilegi di amministratore);
+- l'**ambiente dedicato** e tutti i **componenti dell'applicazione** (Streamlit, ecc.);
+- i **collegamenti** "Assegnazione OEPAC" sul **Desktop** e nel **Menu Start**.
 
-Lo script crea automaticamente un ambiente virtuale, installa le dipendenze e apre l'applicazione nel browser.
+Al termine il gestionale si avvia da solo. Dalle volte successive basta usare il collegamento sul Desktop (oppure `Avvia-OEPAC.bat`). L'applicazione si apre nel browser; per chiuderla si chiude la finestra nera.
 
-### Avvio manuale
+> Per installarlo su più PC: copia l'intera cartella del gestionale su ogni computer (chiavetta USB, cartella condivisa, ecc.) ed esegui `Installa-OEPAC.bat` su ciascuno.
+
+### PC senza internet (installazione offline)
+
+Se i PC di destinazione non hanno accesso a internet (o non è disponibile winget), si prepara **una sola volta** un pacchetto offline:
+
+1. su un PC **con** internet, esegui **`prepara-pacchetto-offline.bat`** (scarica Python e tutti i componenti nella cartella `offline`);
+2. copia l'**intera cartella** del gestionale (compresa `offline`) sui PC di destinazione;
+3. su ciascun PC esegui `Installa-OEPAC.bat`: rileva il pacchetto offline e installa tutto **senza internet**.
+
+## Avvio su Mac / Linux
+
+Doppio clic su `avvia.sh` (oppure da terminale: `./avvia.sh`). Crea l'ambiente, installa le dipendenze e apre l'applicazione nel browser.
+
+### Avvio manuale (qualsiasi sistema)
 
 ```bash
 pip install -r requirements.txt
