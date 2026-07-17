@@ -640,7 +640,7 @@ def esegui_assegnazione(
         "Tipo Gestione", "Fonte Classificazione", "Municipio", "Gruppo 45h",
         "Ore Richieste", "Ore Assegnate", "Organismo attuale",
         "Preferenze della famiglia (in ordine)",
-        "Organismo Assegnato dall'Algoritmo", "Preferenza Soddisfatta",
+        "Organismo Assegnato", "Preferenza Soddisfatta",
         "Data Attivazione", "Settimane set-dic", "Settimane gen-giu",
         "Settimane totali", "Status", "Note",
     ]
@@ -1175,7 +1175,7 @@ def esegui_assegnazione(
             "Preferenze della famiglia (in ordine)": formatta_preferenze(
                 df_work.at[idx, "_preferenze"]
             ),
-            "Organismo Assegnato dall'Algoritmo": df_work.at[idx, "_assegnato"],
+            "Organismo Assegnato": df_work.at[idx, "_assegnato"],
             "Preferenza Soddisfatta": df_work.at[idx, "_pref_soddisfatta"],
             "Data Attivazione": data_att_val,
             "Settimane set-dic": n1_sett,
@@ -1219,7 +1219,7 @@ def esegui_assegnazione(
 
 def costruisci_riepilogo_gruppo(df_result, soglia_ore=45):
     """Costruisce il riepilogo per (Gruppo 45h x Organismo) dal DataFrame assegnazioni."""
-    ORG = "Organismo Assegnato dall'Algoritmo"
+    ORG = "Organismo Assegnato"
 
     def _nomi_scuole(df_g, colonna):
         nomi = sorted(
@@ -1549,7 +1549,7 @@ def calcola_riepilogo_economico(
 ):
     """Costruisce il riepilogo economico aggregato per organismo, con la
     ripartizione nei due periodi set-dic / gen-giu."""
-    ORG = "Organismo Assegnato dall'Algoritmo"
+    ORG = "Organismo Assegnato"
     organismi = sorted([o for o in df_eco[ORG].unique() if o])
     iva_col = f"IVA {aliquota_iva:.0f}% (EUR)"
     cp = _col_periodo(aliquota_iva)
@@ -1705,7 +1705,7 @@ def genera_excel(
         df_assegnazioni, n_settimane, perc_decurtazione, costo_orario, aliquota_iva
     )
 
-    organismi = sorted([o for o in df_eco["Organismo Assegnato dall'Algoritmo"].unique() if o])
+    organismi = sorted([o for o in df_eco["Organismo Assegnato"].unique() if o])
 
     df_economico = calcola_riepilogo_economico(
         df_eco, n_settimane, perc_decurtazione, costo_orario, aliquota_iva
@@ -1727,7 +1727,7 @@ def genera_excel(
         df_criticita.to_excel(writer, sheet_name="Criticita", index=False)
 
         for org in organismi:
-            mask = df_eco["Organismo Assegnato dall'Algoritmo"] == org
+            mask = df_eco["Organismo Assegnato"] == org
             df_o = df_eco.loc[mask, coop_cols_available].copy()
 
             safe_name = re.sub(r"[\\/*?\[\]:]", "", org)[:28].strip()
@@ -1772,7 +1772,7 @@ def genera_excel(
             continue
         ws = wb[sheet_name]
 
-        mask = df_eco["Organismo Assegnato dall'Algoritmo"] == org
+        mask = df_eco["Organismo Assegnato"] == org
         df_o = df_eco.loc[mask]
         ore_sett_tot = df_o["Ore Assegnate"].sum()
         n_al = len(df_o)
@@ -1845,7 +1845,7 @@ def genera_zip_excel_cooperative(
     (contenente SOLO i suoi alunni — privacy GDPR)."""
     import zipfile
 
-    ORG = "Organismo Assegnato dall'Algoritmo"
+    ORG = "Organismo Assegnato"
     organismi = sorted([o for o in df_assegnazioni[ORG].unique() if o])
 
     zip_buf = io.BytesIO()
@@ -2047,9 +2047,9 @@ def genera_pdf_coop(
     elems.append(t)
     elems.append(Spacer(1, 10))
     elems.append(Paragraph(
-        "Documento generato automaticamente dal sistema di assegnazione OEPAC. "
-        "I dati riguardano alunni con disabilita e sono soggetti a riservatezza "
-        "(Reg. UE 2016/679, art. 9).", small,
+        "Documento generato automaticamente. I dati riguardano alunni con "
+        "disabilita e sono soggetti a riservatezza (Reg. UE 2016/679, art. 9).",
+        small,
     ))
 
     doc.build(elems)
@@ -2064,7 +2064,7 @@ def genera_zip_pdf_cooperative(
     """ZIP con una lettera PDF di assegnazione per ogni cooperativa."""
     import zipfile
 
-    ORG = "Organismo Assegnato dall'Algoritmo"
+    ORG = "Organismo Assegnato"
     df_eco = calcola_colonne_economiche(
         df_assegnazioni, n_settimane, perc_decurtazione, costo_orario, aliquota_iva
     )
@@ -2223,7 +2223,7 @@ def _riga_intestazione_meta(meta: dict, parametri: dict) -> list[str]:
     righe.append(f"Soglia minima ore settimanali per organismo: {parametri.get('soglia', 45)}")
     righe.append(
         f"Iterazioni eseguite: {parametri.get('iterazioni', 0)} — "
-        f"spostamenti dell'algoritmo: {parametri.get('spostamenti', 0)}"
+        f"spostamenti effettuati: {parametri.get('spostamenti', 0)}"
     )
     if parametri.get("rettifiche_manuali"):
         righe.append(
@@ -2375,7 +2375,7 @@ def genera_excel_cronologia(
         "segnalano un cambiamento rispetto alla fase precedente.",
         "Foglio «Movimenti»: l'elenco puntuale di ogni spostamento, con la "
         "relativa motivazione.",
-        "Foglio «Registro elaborazione»: il registro tecnico dell'algoritmo.",
+        "Foglio «Registro elaborazione»: il registro tecnico dell'elaborazione.",
     ]:
         c = ws.cell(row=r, column=1, value="• " + nota)
         c.font = INFO_FONT
@@ -2552,7 +2552,7 @@ def genera_pdf_verbale(
     if parametri.get("corso_anno"):
         esiti += f" &nbsp;|&nbsp; già attivati mantenuti: <b>{stats.get('gia_attivati', 0)}</b>"
     esiti += (
-        f"<br/>Spostamenti operati dall'algoritmo: "
+        f"<br/>Spostamenti effettuati in fase di assegnazione: "
         f"<b>{parametri.get('spostamenti', 0)}</b> in "
         f"<b>{stats.get('iterazioni', 0)}</b> iterazioni."
     )
@@ -2572,7 +2572,7 @@ def genera_pdf_verbale(
             "iscrizioni sono state assegnate alla 1ª preferenza espressa "
             "nel rispetto del vincolo delle 45 ore settimanali.", normal))
     else:
-        dett = f"{parametri.get('spostamenti', 0)} dell'algoritmo"
+        dett = f"{parametri.get('spostamenti', 0)} in fase di assegnazione"
         if parametri.get("rettifiche_manuali"):
             dett += f", {parametri['rettifiche_manuali']} rettifiche manuali dell'ufficio"
         elems.append(Paragraph(
@@ -2614,9 +2614,9 @@ def genera_pdf_verbale(
 
     elems.append(Spacer(1, 14))
     elems.append(Paragraph(
-        "Il presente documento è generato automaticamente dal sistema di "
-        "assegnazione OEPAC e riproduce fedelmente i passaggi del "
-        "procedimento. Data ________________________ &nbsp;&nbsp;&nbsp; "
+        "Il presente documento è generato automaticamente e riproduce "
+        "fedelmente i passaggi del procedimento. "
+        "Data ________________________ &nbsp;&nbsp;&nbsp; "
         "Il Responsabile del procedimento ________________________", small))
 
     doc.build(elems)
@@ -2705,9 +2705,9 @@ def verifiche_consistenza(
 
     riconferme_spostate = df_result.loc[
         (df_result["Tipo"].str.strip().str.upper() == "RICONFERMA")
-        & (df_result["Organismo Assegnato dall'Algoritmo"] != "")
+        & (df_result["Organismo Assegnato"] != "")
         & (df_result["Organismo attuale"] != "")
-        & (df_result["Organismo Assegnato dall'Algoritmo"] != df_result["Organismo attuale"])
+        & (df_result["Organismo Assegnato"] != df_result["Organismo attuale"])
     ]
     ok_ric = len(riconferme_spostate) == 0
     checks.append((
@@ -2719,7 +2719,7 @@ def verifiche_consistenza(
     if "Preferenza Soddisfatta" in df_result.columns:
         attivati_spostati = df_result.loc[
             (df_result["Preferenza Soddisfatta"] == "Già attivato")
-            & (df_result["Organismo Assegnato dall'Algoritmo"] != df_result["Organismo attuale"])
+            & (df_result["Organismo Assegnato"] != df_result["Organismo attuale"])
         ]
         ok_att = len(attivati_spostati) == 0
         if (df_result["Preferenza Soddisfatta"] == "Già attivato").any():
@@ -3463,7 +3463,7 @@ def main():
     df_display = df_assegnazioni.copy()
     if filtro_org != "Tutti":
         mask = (
-            df_display["Organismo Assegnato dall'Algoritmo"].apply(
+            df_display["Organismo Assegnato"].apply(
                 lambda x: nomi_uguali(x, filtro_org) if isinstance(x, str) else False
             )
             | df_display["Organismo attuale"].apply(
@@ -3487,76 +3487,96 @@ def main():
         "🧾 Log elaborazione",
     ])
 
+    ORG = "Organismo Assegnato"
+    # Elenco COMPLETO delle cooperative selezionabili nella modifica manuale:
+    # non solo quelle già assegnate, ma tutte quelle indicate come preferenza
+    # dalle famiglie o presenti nel MESIS (così si può assegnare qualsiasi
+    # cooperativa, anche per risolvere una criticità).
+    org_options = sorted(
+        set(organismi_list)
+        | {o for o in df_assegnazioni[ORG].unique() if isinstance(o, str) and o.strip()}
+    )
+
+    def _applica_modifiche(edited):
+        df_full = st.session_state["risultati"]["df_assegnazioni"].set_index("Codice Iscrizione")
+        ed = edited.set_index("Codice Iscrizione")
+        n_mod = 0
+        modifiche_log = []
+        for cod, row in ed.iterrows():
+            if cod not in df_full.index:
+                continue
+            nuovo = row[ORG]
+            vecchio = df_full.at[cod, ORG]
+            if str(nuovo) != str(vecchio):
+                modifiche_log.append({
+                    "codice": cod,
+                    "cognome": df_full.at[cod, "Cognome"] if "Cognome" in df_full.columns else "",
+                    "nome": df_full.at[cod, "Nome"] if "Nome" in df_full.columns else "",
+                    "plesso": df_full.at[cod, "Plesso"] if "Plesso" in df_full.columns else "",
+                    "gruppo_label": etichetta_gruppo(
+                        df_full.at[cod, "Gruppo 45h"] if "Gruppo 45h" in df_full.columns else "",
+                        df_full.at[cod, "Istituto"] if "Istituto" in df_full.columns else "",
+                    ),
+                    "da": vecchio,
+                    "a": nuovo,
+                })
+                df_full.at[cod, ORG] = nuovo
+                df_full.at[cod, "Preferenza Soddisfatta"] = "Manuale"
+                df_full.at[cod, "Status"] = "OK" if nuovo else "Da assegnare manualmente"
+                df_full.at[cod, "Note"] = "Assegnazione modificata manualmente"
+                n_mod += 1
+        df_new = df_full.reset_index()
+        # usa la soglia con cui è stata eseguita l'assegnazione, non il
+        # valore live dello slider (che potrebbe essere stato spostato)
+        soglia_run = res.get("parametri", {}).get("soglia", soglia)
+        st.session_state["risultati"]["df_assegnazioni"] = df_new
+        st.session_state["risultati"]["df_riepilogo"] = costruisci_riepilogo_gruppo(df_new, soglia_run)
+        st.session_state["risultati"]["df_criticita"] = costruisci_criticita(df_new)
+        st.session_state["risultati"]["stats"]["criticita"] = int((df_new["Status"] != "OK").sum())
+        # documenta le rettifiche manuali nella cronologia del procedimento
+        cronologia = st.session_state["risultati"]["stats"].get("cronologia")
+        if cronologia is not None and modifiche_log:
+            registra_rettifica_manuale(cronologia, modifiche_log)
+        return n_mod
+
+    def _pannello_modifica(df_sub, key):
+        if df_sub.empty:
+            st.success("Nessuna riga da modificare qui.")
+            return
+        st.caption(
+            "Cambia la **cooperativa** dal menu a tendina (elenco completo di "
+            "tutte le cooperative), poi clicca **Applica**: stato, criticità e "
+            "importi vengono ricalcolati e la modifica resta tracciata nella "
+            "cronologia del procedimento."
+        )
+        edited = st.data_editor(
+            df_sub, use_container_width=True, hide_index=True, height=500,
+            key=f"editor_{key}",
+            column_config={
+                ORG: st.column_config.SelectboxColumn(
+                    ORG, options=org_options, required=False,
+                ),
+            },
+            disabled=[c for c in df_sub.columns if c != ORG],
+        )
+        if st.button("Applica modifiche e ricalcola", type="primary", key=f"applica_{key}"):
+            n_mod = _applica_modifiche(edited)
+            st.success(f"{n_mod} assegnazioni modificate. Riepiloghi e criticità aggiornati.")
+            st.rerun()
+
     with tab_ass:
         edit_mode = st.toggle(
             "Modifica manuale assegnazioni",
-            help="Permette di cambiare l'Organismo assegnato a un alunno e ricalcolare i riepiloghi.",
+            help="Cambia la cooperativa assegnata a un alunno e ricalcola riepiloghi e criticità.",
         )
         if edit_mode:
-            st.caption(
-                "Modifica la colonna **Organismo Assegnato dall'Algoritmo**, "
-                "poi clicca **Applica modifiche** per ricalcolare riepiloghi e importi. "
-                "Le modifiche manuali sono evidenziate con Preferenza = 'Manuale'."
+            solo_crit = st.checkbox(
+                "Mostra solo le righe da verificare (criticità)",
+                value=not df_criticita.empty,
+                help="Filtra l'elenco alle sole assegnazioni con status diverso da OK.",
             )
-            org_options = sorted([o for o in df_assegnazioni["Organismo Assegnato dall'Algoritmo"].unique() if o])
-            edited = st.data_editor(
-                df_display,
-                use_container_width=True,
-                hide_index=True,
-                height=500,
-                key="editor_ass",
-                column_config={
-                    "Organismo Assegnato dall'Algoritmo": st.column_config.SelectboxColumn(
-                        "Organismo Assegnato dall'Algoritmo",
-                        options=org_options,
-                        required=False,
-                    ),
-                },
-                disabled=[c for c in df_display.columns if c != "Organismo Assegnato dall'Algoritmo"],
-            )
-            if st.button("Applica modifiche e ricalcola", type="primary"):
-                df_full = df_assegnazioni.set_index("Codice Iscrizione")
-                ed = edited.set_index("Codice Iscrizione")
-                n_mod = 0
-                modifiche_log = []
-                for cod, row in ed.iterrows():
-                    nuovo = row["Organismo Assegnato dall'Algoritmo"]
-                    if cod in df_full.index:
-                        vecchio = df_full.at[cod, "Organismo Assegnato dall'Algoritmo"]
-                        if str(nuovo) != str(vecchio):
-                            modifiche_log.append({
-                                "codice": cod,
-                                "cognome": df_full.at[cod, "Cognome"] if "Cognome" in df_full.columns else "",
-                                "nome": df_full.at[cod, "Nome"] if "Nome" in df_full.columns else "",
-                                "plesso": df_full.at[cod, "Plesso"] if "Plesso" in df_full.columns else "",
-                                "gruppo_label": etichetta_gruppo(
-                                    df_full.at[cod, "Gruppo 45h"] if "Gruppo 45h" in df_full.columns else "",
-                                    df_full.at[cod, "Istituto"] if "Istituto" in df_full.columns else "",
-                                ),
-                                "da": vecchio,
-                                "a": nuovo,
-                            })
-                            df_full.at[cod, "Organismo Assegnato dall'Algoritmo"] = nuovo
-                            df_full.at[cod, "Preferenza Soddisfatta"] = "Manuale"
-                            df_full.at[cod, "Status"] = "OK" if nuovo else "Da assegnare manualmente"
-                            df_full.at[cod, "Note"] = "Assegnazione modificata manualmente"
-                            n_mod += 1
-                df_new = df_full.reset_index()
-                # usa la soglia con cui è stata eseguita l'assegnazione, non il
-                # valore live dello slider (che potrebbe essere stato spostato)
-                soglia_run = res.get("parametri", {}).get("soglia", soglia)
-                new_riep = costruisci_riepilogo_gruppo(df_new, soglia_run)
-                new_crit = costruisci_criticita(df_new)
-                st.session_state["risultati"]["df_assegnazioni"] = df_new
-                st.session_state["risultati"]["df_riepilogo"] = new_riep
-                st.session_state["risultati"]["df_criticita"] = new_crit
-                st.session_state["risultati"]["stats"]["criticita"] = int((df_new["Status"] != "OK").sum())
-                # documenta le rettifiche manuali nella cronologia del procedimento
-                cronologia = st.session_state["risultati"]["stats"].get("cronologia")
-                if cronologia is not None and modifiche_log:
-                    registra_rettifica_manuale(cronologia, modifiche_log)
-                st.success(f"{n_mod} assegnazioni modificate. Riepiloghi ricalcolati.")
-                st.rerun()
+            df_edit = df_display[df_display["Status"] != "OK"] if solo_crit else df_display
+            _pannello_modifica(df_edit, "ass")
         else:
             st.dataframe(df_display, use_container_width=True, hide_index=True, height=500)
 
@@ -3567,10 +3587,22 @@ def main():
             st.info("Nessun dato nel riepilogo per il filtro selezionato.")
 
     with tab_crit:
-        if not df_criticita.empty:
-            st.dataframe(df_criticita, use_container_width=True, hide_index=True, height=400)
+        if df_criticita.empty:
+            st.success("Nessuna criticità rilevata.")
         else:
-            st.success("Nessuna criticita rilevata.")
+            st.markdown(
+                f"**{len(df_criticita)} casi da verificare.** Attiva la modifica "
+                "per assegnare manualmente la cooperativa e risolverli: appena "
+                "l'assegnazione è valida, la criticità sparisce."
+            )
+            edit_crit = st.toggle(
+                "Risolvi manualmente le criticità", key="toggle_crit",
+                help="Assegna la cooperativa alle righe critiche dall'elenco completo.",
+            )
+            if edit_crit:
+                _pannello_modifica(df_criticita, "crit")
+            else:
+                st.dataframe(df_criticita, use_container_width=True, hide_index=True, height=400)
 
     with tab_graf:
         _mostra_grafici(df_assegnazioni, df_riepilogo,
@@ -3722,7 +3754,7 @@ def main():
 def _mostra_grafici(df_ass, df_riep, n_settimane, perc_decurtazione, costo_orario, aliquota_iva):
     import altair as alt
 
-    ORG = "Organismo Assegnato dall'Algoritmo"
+    ORG = "Organismo Assegnato"
     df_assegnati = df_ass[df_ass[ORG].astype(str).str.len() > 0]
     if df_assegnati.empty:
         st.info("Nessun dato da visualizzare.")

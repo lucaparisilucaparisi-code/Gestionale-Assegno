@@ -179,7 +179,7 @@ def test_file_reale(percorso):
     df_ca, _, _, log_ca, stats_ca, _ = res_ca
     att = df_ca[df_ca["Preferenza Soddisfatta"] == "Già attivato"]
     check("corso d'anno: attivati mantenuti sul loro organismo",
-          (att["Organismo Assegnato dall'Algoritmo"] == att["Organismo attuale"]).all())
+          (att["Organismo Assegnato"] == att["Organismo attuale"]).all())
     check("corso d'anno: conteggio attivati coerente",
           stats_ca["gia_attivati"] == len(att), f"{stats_ca['gia_attivati']} vs {len(att)}")
 
@@ -284,7 +284,7 @@ def test_vincolo_45h_riassegnazione():
     def r_nuova(cod, ore, prefs):
         return riga(cod, "NUOVA ISCRIZIONE", *G, ore, enti="\n".join(prefs))
 
-    ORG = "Organismo Assegnato dall'Algoritmo"
+    ORG = "Organismo Assegnato"
 
     def esegui(rows):
         df, cm, _ = app.carica_dati(costruisci_mesis(rows))
@@ -437,10 +437,10 @@ def test_corso_anno_sintetico():
     df_rc, stats_c = res_c[0], res_c[4]
     by = df_rc.set_index("Codice Iscrizione")
     check("attivato (32) mantenuto su COOP A nonostante 1ª preferenza COOP B",
-          by.at["32", "Organismo Assegnato dall'Algoritmo"] == "COOP A"
+          by.at["32", "Organismo Assegnato"] == "COOP A"
           and by.at["32", "Preferenza Soddisfatta"] == "Già attivato")
     check("nuovo (33) assegnato dalla 1ª preferenza",
-          by.at["33", "Organismo Assegnato dall'Algoritmo"] == "COOP A")
+          by.at["33", "Organismo Assegnato"] == "COOP A")
     check("conteggio attivati = 1", stats_c["gia_attivati"] == 1)
 
     # con data di riferimento al 30/10: l'attivazione di novembre non è fissa
@@ -587,7 +587,7 @@ def test_cronologia():
 def test_cronologia_movimento_netto():
     print("\n=== Cronologia: solo movimento netto (niente coop fantasma) ===")
     G = ("MUNICIPIO ROMA V", "RMIC0000IC", "IC TEST", "RMEE0000IC", "PLESSO", "IC")
-    ORG = "Organismo Assegnato dall'Algoritmo"
+    ORG = "Organismo Assegnato"
     # A sceglie [P1, P2, P3]: P1 e P2 restano sotto 45h (solo A), P3 e' valida
     # (riconferma da 50h). A dovrebbe rimbalzare P1->P2->P3 internamente, ma
     # la cronologia deve mostrare solo da P1 a P3, senza P2 (fantasma).
@@ -664,7 +664,7 @@ def test_nat_riparametrazione():
 def test_attribuzione_report():
     print("\n=== Attribuzione dei fogli per-organismo nel report ===")
     from openpyxl import load_workbook
-    ORG = "Organismo Assegnato dall'Algoritmo"
+    ORG = "Organismo Assegnato"
 
     def _riga_report(cod, org, ore):
         return {
@@ -747,7 +747,7 @@ def test_layout_preferenze():
     cols = list(da.columns)
     # ordine: attuale -> preferenze -> assegnato -> preferenza soddisfatta
     seq = ["Organismo attuale", "Preferenze della famiglia (in ordine)",
-           "Organismo Assegnato dall'Algoritmo", "Preferenza Soddisfatta"]
+           "Organismo Assegnato", "Preferenza Soddisfatta"]
     idxs = [cols.index(c) for c in seq if c in cols]
     check("colonne presenti e in ordine (attuale->preferenze->assegnato->esito)",
           len(idxs) == 4 and idxs == sorted(idxs), str(idxs))
@@ -768,6 +768,56 @@ def test_layout_preferenze():
           row["Status"] == "OK", row["Status"])
 
 
+def test_modifica_manuale_report():
+    print("\n=== Modifica manuale: i report riflettono la modifica ===")
+    import openpyxl, io, zipfile
+    ORG = "Organismo Assegnato"
+    G = ("MUNICIPIO ROMA V", "RMIC0000IC", "IC TEST", "RMEE0000IC", "PLESSO", "IC")
+    rows = [
+        riga("X",  "NUOVA ISCRIZIONE", *G, 15, enti="GRANDE COOP"),
+        riga("Y1", "NUOVA ISCRIZIONE", *G, 15, enti="GRANDE COOP"),
+        riga("Y2", "NUOVA ISCRIZIONE", *G, 15, enti="GRANDE COOP"),
+    ]
+    df, cm, _ = app.carica_dati(costruisci_mesis(rows))
+    res = app.esegui_assegnazione(df, cm, 45, 50, auto_ambito=True)
+    da, stats = res[0], res[4]
+    n_fasi0 = len(stats["cronologia"]["passi"])
+
+    # simula la modifica manuale (come _applica_modifiche nella UI)
+    df_full = da.set_index("Codice Iscrizione")
+    df_full.at["X", ORG] = "ALTRA COOP"
+    df_full.at["X", "Preferenza Soddisfatta"] = "Manuale"
+    df_full.at["X", "Status"] = "OK"
+    df_new = df_full.reset_index()
+    new_riep = app.costruisci_riepilogo_gruppo(df_new, 45)
+    new_crit = app.costruisci_criticita(df_new)
+    app.registra_rettifica_manuale(stats["cronologia"], [{
+        "codice": "X", "cognome": "", "nome": "", "plesso": "",
+        "gruppo_label": "IC TEST", "da": "GRANDE COOP", "a": "ALTRA COOP"}])
+
+    # il report Excel prodotto dal df aggiornato riflette la modifica
+    xlsx = app.genera_excel(df_new, new_riep, new_crit, 35, 11.0, 24.07, 5.0)
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx))
+    hdr = [c.value for c in wb["Assegnazioni"][1]]
+    ci = hdr.index(ORG) + 1
+    xrow = [r for r in wb["Assegnazioni"].iter_rows(min_row=2) if r[0].value == "X"][0]
+    check("report Excel: X aggiornato ad ALTRA COOP", xrow[ci - 1].value == "ALTRA COOP",
+          str(xrow[ci - 1].value))
+    check("report Excel: foglio per ALTRA COOP creato",
+          any("ALTRA" in s for s in wb.sheetnames), str(wb.sheetnames))
+
+    # lettera PDF per la nuova cooperativa
+    zp = app.genera_zip_pdf_cooperative(df_new, 35, 11.0, 24.07, 5.0)
+    names = zipfile.ZipFile(io.BytesIO(zp)).namelist()
+    check("lettera PDF per ALTRA COOP prodotta",
+          any("ALTRA" in n.upper() for n in names), str(names))
+
+    # la cronologia registra la rettifica come nuova fase
+    check("cronologia: rettifica manuale come fase aggiuntiva",
+          len(stats["cronologia"]["passi"]) == n_fasi0 + 1,
+          f"{n_fasi0} -> {len(stats['cronologia']['passi'])}")
+
+
 def test_logo():
     print("\n=== Logo del gestionale ===")
     check("file logo presente", app.logo_path() is not None, str(app.LOGO_PATH))
@@ -786,7 +836,7 @@ def test_logo():
     res_l = app.esegui_assegnazione(df_l, cm_l, 45, 50, auto_ambito=True)
     eco = app.calcola_colonne_economiche(res_l[0])
     pdf = app.genera_pdf_coop(
-        eco[eco["Organismo Assegnato dall'Algoritmo"] == "COOP LOGO"], "COOP LOGO")
+        eco[eco["Organismo Assegnato"] == "COOP LOGO"], "COOP LOGO")
     check("lettera PDF valida con logo", pdf[:5] == b"%PDF-" and len(pdf) > 20000,
           f"{len(pdf)} bytes")
 
@@ -826,7 +876,7 @@ def test_settimane_periodi():
         "Ore Assegnate": [10, 10, 20],
         "Settimane set-dic": [14, 8, 14],
         "Settimane gen-giu": [21, 21, 21],
-        "Organismo Assegnato dall'Algoritmo": ["A", "A", "B"],
+        "Organismo Assegnato": ["A", "A", "B"],
     })
     eco = app.calcola_colonne_economiche(df)
     imp_diff = (eco["Imponibile (EUR)"]
@@ -902,6 +952,7 @@ if __name__ == "__main__":
     test_attribuzione_report()
     test_settimane_periodi()
     test_layout_preferenze()
+    test_modifica_manuale_report()
     test_logo()
 
     print()
