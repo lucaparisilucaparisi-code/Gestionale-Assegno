@@ -35,7 +35,7 @@ if not exist "%~dp0offline\wheels" mkdir "%~dp0offline\wheels"
 
 echo.
 echo [1/2] Download dei componenti dell'applicazione (wheel Windows)...
-!PYCMD! -m pip download -r "%~dp0requirements.txt" --dest "%~dp0offline\wheels" --only-binary=:all: --platform win_amd64 --python-version 312 --implementation cp
+!PYCMD! -m pip download -r "%~dp0requirements.txt" --dest "%~dp0offline\wheels" --only-binary=:all: --platform win_amd64 --python-version 3.12 --implementation cp
 if !errorlevel! neq 0 (
     echo.
     echo [ERRORE] Download dei componenti non riuscito.

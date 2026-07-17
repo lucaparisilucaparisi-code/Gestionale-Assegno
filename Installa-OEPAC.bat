@@ -100,7 +100,7 @@ REM ------------------------------------------------------------
 REM  3) Componenti dell'applicazione
 REM ------------------------------------------------------------
 echo [3/4] Installazione dei componenti dell'applicazione...
-"%VPY%" -m pip install --upgrade pip >nul 2>&1
+if not "%OFFLINE%"=="1" "%VPY%" -m pip install --upgrade pip >nul 2>&1
 if "%OFFLINE%"=="1" (
     "%VPY%" -m pip install --no-index --find-links "%~dp0offline\wheels" -r "%~dp0requirements.txt"
 ) else (
@@ -155,14 +155,15 @@ goto :eof
 
 :aggiorna_path
 REM Rilegge il PATH utente dal registro (aggiornato dall'installer di Python)
+set "USERPATH="
 for /f "usebackq tokens=2,*" %%A in (`reg query "HKCU\Environment" /v PATH 2^>nul`) do set "USERPATH=%%B"
 if defined USERPATH set "PATH=%PATH%;%USERPATH%"
 goto :eof
 
 :crea_venv
-REM Crea l'ambiente virtuale gestendo sia "py -3" sia un percorso con spazi
-echo(!PYCMD!| find "\" >nul
-if !errorlevel! == 0 (
+REM Crea l'ambiente virtuale gestendo sia "py -3" sia un percorso con spazi.
+REM Se PYCMD contiene un backslash e' un percorso -> va quotato.
+if not "!PYCMD:\=!"=="!PYCMD!" (
     "!PYCMD!" -m venv "%~dp0.venv"
 ) else (
     !PYCMD! -m venv "%~dp0.venv"

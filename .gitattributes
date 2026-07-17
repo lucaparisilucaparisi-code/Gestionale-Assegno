@@ -1,0 +1,15 @@
+# Gli script Windows DEVONO avere terminazioni di riga CRLF, altrimenti
+# cmd.exe puo' fallire su goto/call/label. Git li converte a CRLF in
+# checkout su qualsiasi sistema.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Gli script Unix restano LF
+*.sh text eol=lf
+
+# File binari (nessuna conversione)
+*.ico binary
+*.xlsx binary
+*.pdf binary
+*.png binary
