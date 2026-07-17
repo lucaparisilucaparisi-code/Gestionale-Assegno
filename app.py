@@ -863,9 +863,11 @@ def esegui_assegnazione(
             org_n = normalizza_nome(org)
             ore_per_coop[g][org_n] = ore_per_coop[g].get(org_n, 0) + df_work.at[idx, "_ore"]
 
-        passo_idx_iter = len(cronologia_passi)
-        titolo_iter = f"Applicazione vincolo {soglia_ore}h — iterazione {iteration}"
-
+        # NB: la ricerca procede per iterazioni interne (un passo di preferenza
+        # per alunno per iterazione); la cronologia NON registra queste tappe
+        # intermedie — che passerebbero per cooperative poi scartate — ma solo
+        # il movimento netto finale (1ª preferenza -> cooperativa definitiva),
+        # registrato dopo la convergenza. Vedi più sotto.
         for idx in nuove_idx:
             if df_work.at[idx, "_status"] in (
                 "Preferenze non espresse",
@@ -886,22 +888,13 @@ def esegui_assegnazione(
 
             # cooperativa attuale sotto soglia (totale, riconferme comprese):
             # scorri alla preferenza successiva espressa dalla famiglia
-            g_label = cronologia_anagrafica[idx]["gruppo_label"]
             prefs = df_work.at[idx, "_preferenze"]
             pi = df_work.at[idx, "_pref_idx"] + 1
             while pi < len(prefs) and normalizza_nome(prefs[pi]) == org_n:
                 pi += 1  # salta eventuali ripetizioni della stessa coop
             if pi < len(prefs):
-                nuovo = prefs[pi]
-                df_work.at[idx, "_assegnato"] = nuovo
+                df_work.at[idx, "_assegnato"] = prefs[pi]
                 df_work.at[idx, "_pref_idx"] = pi
-                _registra_movimento(
-                    idx, passo_idx_iter, titolo_iter, org, nuovo,
-                    f"L'organismo «{org}» non raggiunge la soglia di "
-                    f"{soglia_ore}h nel gruppo «{g_label}» (somma di tutte le "
-                    "ore assegnate, riconferme comprese): la domanda è "
-                    f"riassegnata alla {pi + 1}ª preferenza espressa.",
-                )
                 spostamenti += 1
             else:
                 df_work.at[idx, "_assegnato"] = ""
@@ -911,35 +904,13 @@ def esegui_assegnazione(
                     f"{soglia_ore}h nel gruppo — assegnazione manuale necessaria"
                 )
                 df_work.at[idx, "_pref_soddisfatta"] = "Non assegnato"
-                _registra_movimento(
-                    idx, passo_idx_iter, titolo_iter, org, "",
-                    f"Tutte le preferenze espresse risultano sotto la soglia "
-                    f"di {soglia_ore}h nel gruppo «{g_label}»: la domanda "
-                    "richiede assegnazione manuale.",
-                )
                 spostamenti += 1
 
         stats["iterazioni"] = iteration
         if spostamenti == 0:
             log.append(f"Iterazione {iteration}: nessuno spostamento — convergenza raggiunta.")
             break
-
-        log.append(
-            f"Iterazione {iteration}: {spostamenti} spostamenti, "
-            f"{sum(1 for i in nuove_idx if df_work.at[i, '_status'] == 'Da assegnare manualmente')} "
-            f"casi non risolti."
-        )
-        _registra_passo(
-            titolo_iter,
-            f"{spostamenti} spostamenti: le nuove iscrizioni la cui "
-            f"cooperativa non raggiunge {soglia_ore} ore settimanali nel "
-            "gruppo (contando tutte le ore assegnate, riconferme comprese) "
-            "sono state riassegnate alla preferenza successiva espressa; le "
-            "riconferme e gli alunni già attivati non vengono mai spostati.",
-            f"Art. 5, comma 5, Linee Guida DGC Roma Capitale n. 260/2024 "
-            f"(soglia minima {soglia_ore}h per organismo)",
-        )
-        stats["spostamenti"] += spostamenti
+        log.append(f"Iterazione {iteration}: {spostamenti} riassegnazioni interne.")
     else:
         log.append(f"Raggiunto limite massimo di {max_iter} iterazioni.")
 
@@ -990,12 +961,53 @@ def esegui_assegnazione(
         (df_work["_status"] != "OK").sum()
     )
 
+    # Registra il movimento NETTO di ogni nuova iscrizione riassegnata: dalla
+    # 1ª preferenza (assegnazione iniziale) alla cooperativa definitiva. Le
+    # cooperative solo "sfiorate" durante le iterazioni interne — che nel
+    # report finale non ricevono alcuna assegnazione — non compaiono: il
+    # registro riflette esattamente l'esito del report.
+    passo_esito_idx = len(cronologia_passi)
+    titolo_esito = "Esito definitivo"
+    n_riass = 0
+    for idx in nuove_idx:
+        prefs = df_work.at[idx, "_preferenze"]
+        if not prefs:
+            continue
+        prima = prefs[0]
+        g_label = cronologia_anagrafica[idx]["gruppo_label"]
+        if df_work.at[idx, "_status"] == "Da assegnare manualmente":
+            _registra_movimento(
+                idx, passo_esito_idx, titolo_esito, prima, "",
+                f"La 1ª preferenza «{prima}» non raggiunge la soglia di "
+                f"{soglia_ore}h nel gruppo «{g_label}» e nessuna delle "
+                "preferenze successive la raggiunge: la domanda richiede "
+                "assegnazione manuale.",
+            )
+            n_riass += 1
+            continue
+        pi = df_work.at[idx, "_pref_idx"]
+        finale = df_work.at[idx, "_assegnato"]
+        if pi > 0 and normalizza_nome(finale) != normalizza_nome(prima):
+            _registra_movimento(
+                idx, passo_esito_idx, titolo_esito, prima, finale,
+                f"La 1ª preferenza «{prima}» non raggiunge la soglia di "
+                f"{soglia_ore}h nel gruppo «{g_label}» (somma di tutte le ore "
+                "assegnate, riconferme comprese): la domanda è assegnata alla "
+                f"{pi + 1}ª preferenza utile «{finale}».",
+            )
+            n_riass += 1
+    stats["spostamenti"] = n_riass
+
     _registra_passo(
-        "Esito definitivo",
-        "Assegnazione definitiva risultante dal procedimento automatizzato, "
-        "dopo la convergenza del vincolo delle 45 ore settimanali per "
-        "organismo. Eventuali casi non risolti sono elencati tra le criticità.",
-        "Esito del procedimento automatizzato",
+        titolo_esito,
+        f"Assegnazione definitiva. Le nuove iscrizioni la cui 1ª preferenza "
+        f"non raggiunge le {soglia_ore} ore settimanali nel gruppo (contando "
+        "tutte le ore assegnate, riconferme comprese) sono assegnate alla "
+        "prima preferenza utile che raggiunge la soglia; le riconferme e gli "
+        "alunni già attivati mantengono il proprio organismo per continuità. "
+        "Le cooperative solo sfiorate durante la ricerca non compaiono. "
+        "Eventuali casi non risolti sono elencati tra le criticità.",
+        "Art. 5, commi 5 e 6, Linee Guida DGC Roma Capitale n. 260/2024",
     )
 
     stats["cronologia"] = {

@@ -479,8 +479,10 @@ def test_cronologia():
     check("prima fase = stato iniziale", titoli[0].startswith("Stato iniziale"))
     check("seconda fase = assegnazione iniziale", titoli[1] == "Assegnazione iniziale")
     check("ultima fase = esito definitivo", titoli[-1] == "Esito definitivo")
-    check("almeno un'iterazione 45h registrata",
-          any("iterazione" in t for t in titoli), str(titoli))
+    # niente fasi/iterazioni intermedie: solo 3 fasi significative
+    check("esattamente 3 fasi (niente tappe intermedie)", len(passi) == 3, str(titoli))
+    check("nessuna fase 'iterazione' nella cronologia",
+          not any("iterazione" in t.lower() for t in titoli), str(titoli))
 
     # l'alunno 42 nella cronologia passa da PICCOLA a GRANDE
     anagr = cron["anagrafica"]
@@ -582,6 +584,35 @@ def test_cronologia():
     check("verbale rigenerato dopo rettifica manuale", pdf_dopo[:4] == b"%PDF")
 
 
+def test_cronologia_movimento_netto():
+    print("\n=== Cronologia: solo movimento netto (niente coop fantasma) ===")
+    G = ("MUNICIPIO ROMA V", "RMIC0000IC", "IC TEST", "RMEE0000IC", "PLESSO", "IC")
+    ORG = "Organismo Assegnato dall'Algoritmo"
+    # A sceglie [P1, P2, P3]: P1 e P2 restano sotto 45h (solo A), P3 e' valida
+    # (riconferma da 50h). A dovrebbe rimbalzare P1->P2->P3 internamente, ma
+    # la cronologia deve mostrare solo da P1 a P3, senza P2 (fantasma).
+    rows = [
+        riga("R", "RICONFERMA", *G, 50, org="P3 Coop"),
+        riga("A", "NUOVA ISCRIZIONE", *G, 10, enti="P1 Coop\nP2 Coop\nP3 Coop"),
+    ]
+    df, cm, _ = app.carica_dati(costruisci_mesis(rows))
+    res = app.esegui_assegnazione(df, cm, 45, 50, auto_ambito=True)
+    dfa, cron = res[0], res[4]["cronologia"]
+    anagr = cron["anagrafica"]
+    fin = dfa.loc[dfa["Codice Iscrizione"] == "A", ORG].iloc[0]
+    check("A finisce su P3 Coop (3ª preferenza)", fin == "P3 Coop", fin)
+    mov = [m for m in cron["movimenti"] if anagr[m["idx"]]["codice"] == "A"]
+    check("A: un solo movimento netto registrato", len(mov) == 1, str(mov))
+    check("A: movimento da P1 a P3 (niente P2 intermedia)",
+          mov and mov[0]["da"] == "P1 Coop" and mov[0]["a"] == "P3 Coop",
+          str(mov))
+    dest = {m["a"] for m in cron["movimenti"] if m["a"]}
+    check("nessuna coop intermedia 'P2 Coop' nei movimenti", "P2 Coop" not in dest)
+    orgs_finali = {o for o in dfa[ORG].unique() if o}
+    check("ogni destinazione dei movimenti e' un organismo finale",
+          all(m["a"] in orgs_finali for m in cron["movimenti"] if m["a"]))
+
+
 def test_attribuzione_report():
     print("\n=== Attribuzione dei fogli per-organismo nel report ===")
     from openpyxl import load_workbook
@@ -674,6 +705,7 @@ if __name__ == "__main__":
     test_risoluzione_per_plesso()
     test_corso_anno_sintetico()
     test_cronologia()
+    test_cronologia_movimento_netto()
     test_attribuzione_report()
 
     print()
