@@ -13,13 +13,70 @@ assegnazioni in corso d'anno secondo le quattro finestre di attivazione
 (nota Dipartimento Scuola QM/102670/2025).
 """
 
+import base64
 import datetime
 import html
 import io
+import os
 import re
 
 import pandas as pd
 import streamlit as st
+
+
+# ---------------------------------------------------------------------------
+# Logo del gestionale (icona ufficiale "ASSEGNO" - Roma Capitale)
+# ---------------------------------------------------------------------------
+LOGO_FILE = "Icona assegno.png"
+LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), LOGO_FILE)
+
+
+def logo_path() -> str | None:
+    """Percorso del file logo se presente, altrimenti None."""
+    return LOGO_PATH if os.path.exists(LOGO_PATH) else None
+
+
+def logo_data_uri() -> str | None:
+    """Logo come data URI base64 (per l'HTML dell'intestazione)."""
+    p = logo_path()
+    if not p:
+        return None
+    try:
+        with open(p, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+    except OSError:
+        return None
+
+
+_PDF_LOGO_CACHE: dict = {}
+
+
+def _pdf_logo(altezza_mm: float = 20):
+    """Flowable reportlab del logo per l'intestazione dei PDF (o None),
+    con proporzioni originali preservate. Il logo viene ridimensionato una
+    sola volta (max 256px) e riusato, per non gonfiare i PDF quando se ne
+    generano molti (una lettera per organismo)."""
+    p = logo_path()
+    if not p:
+        return None
+    try:
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Image as RLImage
+        if "png" not in _PDF_LOGO_CACHE:
+            from PIL import Image as PILImage
+            im = PILImage.open(p).convert("RGBA")
+            im.thumbnail((256, 256), PILImage.LANCZOS)
+            b = io.BytesIO()
+            im.save(b, format="PNG")
+            _PDF_LOGO_CACHE["png"] = b.getvalue()
+            _PDF_LOGO_CACHE["size"] = im.size
+        iw, ih = _PDF_LOGO_CACHE["size"]
+        h = altezza_mm * mm
+        w = h * (iw / ih) if ih else h
+        return RLImage(io.BytesIO(_PDF_LOGO_CACHE["png"]), width=w, height=h)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1815,8 +1872,21 @@ def genera_pdf_coop(
     today_str = datetime.date.today().strftime("%d/%m/%Y")
 
     elems = []
-    elems.append(Paragraph("ASSEGNAZIONE SERVIZIO OEPAC", h1))
-    elems.append(Paragraph(org, h2))
+    titoli = [Paragraph("ASSEGNAZIONE SERVIZIO OEPAC", h1), Paragraph(org, h2)]
+    logo = _pdf_logo(22)
+    if logo is not None:
+        htab = Table([[logo, titoli]], colWidths=[28 * mm, None])
+        htab.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (0, 0), 0),
+            ("RIGHTPADDING", (0, 0), (0, 0), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elems.append(htab)
+    else:
+        elems.extend(titoli)
+    elems.append(Spacer(1, 4))
     elems.append(Paragraph(
         f"Roma, {today_str} &nbsp;&nbsp;|&nbsp;&nbsp; "
         "Ai sensi dell'Art. 5, commi 5 e 6 delle Linee Guida approvate con "
@@ -2344,10 +2414,25 @@ def genera_pdf_verbale(
     cellb = ParagraphStyle("cb", parent=cell, fontName="Helvetica-Bold")
 
     elems = []
-    elems.append(Paragraph(
-        "VERBALE DEL PROCEDIMENTO DI ASSEGNAZIONE AUTOMATICA<br/>"
-        "DEL SERVIZIO OEPAC", h1))
-    elems.append(Paragraph("Roma Capitale — Servizio OEPAC", normal))
+    titoli = [
+        Paragraph(
+            "VERBALE DEL PROCEDIMENTO DI ASSEGNAZIONE AUTOMATICA<br/>"
+            "DEL SERVIZIO OEPAC", h1),
+        Paragraph("Roma Capitale — Servizio OEPAC", normal),
+    ]
+    logo = _pdf_logo(22)
+    if logo is not None:
+        htab = Table([[logo, titoli]], colWidths=[28 * mm, None])
+        htab.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (0, 0), 0),
+            ("RIGHTPADDING", (0, 0), (0, 0), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ]))
+        elems.append(htab)
+    else:
+        elems.extend(titoli)
     elems.append(Spacer(1, 6))
 
     for riga in _riga_intestazione_meta(meta, parametri):
@@ -2699,10 +2784,22 @@ div[data-testid="stDecoration"] {display: none;}
 .oepac-header {
     background: linear-gradient(135deg, #6E1626 0%, #9E2B3D 100%);
     border-radius: 12px;
-    padding: 20px 26px;
+    padding: 18px 26px;
     margin-bottom: 4px;
     color: #FFFFFF;
+    display: flex;
+    align-items: center;
+    gap: 20px;
 }
+.oepac-header .logo {
+    height: 84px; width: 84px; flex: 0 0 auto;
+    border-radius: 16px;
+    background: #FFFFFF;
+    padding: 4px;
+    box-shadow: 0 2px 8px rgba(0,0,0,.25);
+    object-fit: contain;
+}
+.oepac-header .testo { min-width: 0; }
 .oepac-header .titolo {
     font-size: 1.55rem; font-weight: 700; letter-spacing: .2px;
     line-height: 1.25;
@@ -2748,13 +2845,18 @@ PASSI_APP = [
 
 def _render_intestazione():
     st.markdown(STILE_APP, unsafe_allow_html=True)
+    uri = logo_data_uri()
+    logo_img = f'<img class="logo" src="{uri}" alt="Logo ASSEGNO">' if uri else ""
     st.markdown(
-        """
+        f"""
         <div class="oepac-header">
-          <div class="titolo">Assegnazione automatica OEPAC</div>
-          <div class="sottotitolo">Roma Capitale · Linee Guida DGC n. 260/2024
-          (Art. 5, commi 5 e 6) · vincolo 45 ore settimanali per gruppo ·
-          classificazione automatica IC / infanzie comunali / scuole paritarie</div>
+          {logo_img}
+          <div class="testo">
+            <div class="titolo">Assegnazione automatica OEPAC</div>
+            <div class="sottotitolo">Roma Capitale · Linee Guida DGC n. 260/2024
+            (Art. 5, commi 5 e 6) · vincolo 45 ore settimanali per gruppo ·
+            classificazione automatica IC / infanzie comunali / scuole paritarie</div>
+          </div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -2862,7 +2964,7 @@ def estrai_metadati_mesis(file_bytes: bytes) -> dict[str, str]:
 def main():
     st.set_page_config(
         page_title="Assegnazione OEPAC — Roma Capitale",
-        page_icon="🏛️",
+        page_icon=logo_path() or "🏛️",
         layout="wide",
         initial_sidebar_state="expanded",
     )

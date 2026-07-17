@@ -677,6 +677,29 @@ def test_attribuzione_report():
           str(fogli_org))
 
 
+def test_logo():
+    print("\n=== Logo del gestionale ===")
+    check("file logo presente", app.logo_path() is not None, str(app.LOGO_PATH))
+    uri = app.logo_data_uri()
+    check("data URI PNG per l'intestazione",
+          bool(uri) and uri.startswith("data:image/png;base64,"))
+    fl = app._pdf_logo(22)
+    check("flowable logo per i PDF", fl is not None)
+
+    # il logo compare nelle lettere e nel verbale (PDF validi, immagine inclusa)
+    rows = [
+        riga("61", "RICONFERMA", "MUNICIPIO ROMA V", "RMIC000061", "IC ZETA",
+             "RMEE000061", "PLESSO ZETA", "IC", 45, org="COOP LOGO"),
+    ]
+    df_l, cm_l, _ = app.carica_dati(costruisci_mesis(rows))
+    res_l = app.esegui_assegnazione(df_l, cm_l, 45, 50, auto_ambito=True)
+    eco = app.calcola_colonne_economiche(res_l[0])
+    pdf = app.genera_pdf_coop(
+        eco[eco["Organismo Assegnato dall'Algoritmo"] == "COOP LOGO"], "COOP LOGO")
+    check("lettera PDF valida con logo", pdf[:5] == b"%PDF-" and len(pdf) > 20000,
+          f"{len(pdf)} bytes")
+
+
 def test_settimane_periodi():
     print("\n=== Periodi 14/21 e riparametrazione per finestra ===")
 
@@ -786,6 +809,7 @@ if __name__ == "__main__":
     test_cronologia_movimento_netto()
     test_attribuzione_report()
     test_settimane_periodi()
+    test_logo()
 
     print()
     if FALLITI:
